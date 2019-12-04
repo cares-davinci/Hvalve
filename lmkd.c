@@ -200,7 +200,7 @@ static int psi_complete_stall_ms;
 static int thrashing_limit_pct;
 static int thrashing_limit_decay_pct;
 static bool use_psi_monitors = false;
-static struct kernel_poll_info kpoll_info;
+static int kpoll_fd;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_SOME, 70 },    /* 70ms out of 1sec for partial stall */
     { PSI_SOME, 100 },   /* 100ms out of 1sec for partial stall */
@@ -638,6 +638,176 @@ static char *reread_file(struct reread_data *data) {
     return buf;
 }
 
+static bool claim_record(struct proc* procp, pid_t pid) {
+    if (procp->reg_pid == pid) {
+        /* Record already belongs to the registrant */
+        return true;
+    }
+    if (procp->reg_pid == 0) {
+        /* Old registrant is gone, claim the record */
+        procp->reg_pid = pid;
+        return true;
+    }
+    /* The record is owned by another registrant */
+    return false;
+}
+
+static void remove_claims(pid_t pid) {
+    int i;
+
+    for (i = 0; i < PIDHASH_SZ; i++) {
+        struct proc* procp = pidhash[i];
+        while (procp) {
+            if (procp->reg_pid == pid) {
+                procp->reg_pid = 0;
+            }
+            procp = procp->pidhash_next;
+        }
+    }
+}
+
+static void ctrl_data_close(int dsock_idx) {
+    struct epoll_event epev;
+
+    ALOGI("closing lmkd data connection");
+    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, data_sock[dsock_idx].sock, &epev) == -1) {
+        // Log a warning and keep going
+        ALOGW("epoll_ctl for data connection socket failed; errno=%d", errno);
+    }
+    maxevents--;
+
+    close(data_sock[dsock_idx].sock);
+    data_sock[dsock_idx].sock = -1;
+
+    /* Mark all records of the old registrant as unclaimed */
+    remove_claims(data_sock[dsock_idx].pid);
+}
+
+static ssize_t ctrl_data_read(int dsock_idx, char* buf, size_t bufsz, struct ucred* sender_cred) {
+    struct iovec iov = {buf, bufsz};
+    char control[CMSG_SPACE(sizeof(struct ucred))];
+    struct msghdr hdr = {
+            NULL, 0, &iov, 1, control, sizeof(control), 0,
+    };
+    ssize_t ret;
+    ret = TEMP_FAILURE_RETRY(recvmsg(data_sock[dsock_idx].sock, &hdr, 0));
+    if (ret == -1) {
+        ALOGE("control data socket read failed; %s", strerror(errno));
+        return -1;
+    }
+    if (ret == 0) {
+        ALOGE("Got EOF on control data socket");
+        return -1;
+    }
+
+    struct ucred* cred = NULL;
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&hdr);
+    while (cmsg != NULL) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS) {
+            cred = (struct ucred*)CMSG_DATA(cmsg);
+            break;
+        }
+        cmsg = CMSG_NXTHDR(&hdr, cmsg);
+    }
+
+    if (cred == NULL) {
+        ALOGE("Failed to retrieve sender credentials");
+        /* Close the connection */
+        ctrl_data_close(dsock_idx);
+        return -1;
+    }
+
+    memcpy(sender_cred, cred, sizeof(struct ucred));
+
+    /* Store PID of the peer */
+    data_sock[dsock_idx].pid = cred->pid;
+
+    return ret;
+}
+
+static int ctrl_data_write(int dsock_idx, char* buf, size_t bufsz) {
+    int ret = 0;
+
+    ret = TEMP_FAILURE_RETRY(write(data_sock[dsock_idx].sock, buf, bufsz));
+
+    if (ret == -1) {
+        ALOGE("control data socket write failed; errno=%d", errno);
+    } else if (ret == 0) {
+        ALOGE("Got EOF on control data socket");
+        ret = -1;
+    }
+
+    return ret;
+}
+
+/*
+ * Write the pid/uid pair over the data socket, note: all active clients
+ * will receive this unsolicited notification.
+ */
+static void ctrl_data_write_lmk_kill_occurred(pid_t pid, uid_t uid) {
+    LMKD_CTRL_PACKET packet;
+    size_t len = lmkd_pack_set_prockills(packet, pid, uid);
+
+    for (int i = 0; i < MAX_DATA_CONN; i++) {
+        if (data_sock[i].sock >= 0) {
+            ctrl_data_write(i, (char*)packet, len);
+        }
+    }
+}
+
+static void poll_kernel(int poll_fd) {
+    if (poll_fd == -1) {
+        // not waiting
+        return;
+    }
+
+    while (1) {
+        char rd_buf[256];
+        int bytes_read = TEMP_FAILURE_RETRY(pread(poll_fd, (void*)rd_buf, sizeof(rd_buf), 0));
+        if (bytes_read <= 0) break;
+        rd_buf[bytes_read] = '\0';
+
+        int64_t pid;
+        int64_t uid;
+        int64_t group_leader_pid;
+        int64_t rss_in_pages;
+        struct memory_stat mem_st = {};
+        int16_t oom_score_adj;
+        int16_t min_score_adj;
+        int64_t starttime;
+        char* taskname = 0;
+
+        int fields_read =
+                sscanf(rd_buf,
+                       "%" SCNd64 " %" SCNd64 " %" SCNd64 " %" SCNd64 " %" SCNd64 " %" SCNd64
+                       " %" SCNd16 " %" SCNd16 " %" SCNd64 "\n%m[^\n]",
+                       &pid, &uid, &group_leader_pid, &mem_st.pgfault, &mem_st.pgmajfault,
+                       &rss_in_pages, &oom_score_adj, &min_score_adj, &starttime, &taskname);
+
+        /* only the death of the group leader process is logged */
+        if (fields_read == 10 && group_leader_pid == pid) {
+            ctrl_data_write_lmk_kill_occurred((pid_t)pid, (uid_t)uid);
+            mem_st.process_start_time_ns = starttime * (NS_PER_SEC / sysconf(_SC_CLK_TCK));
+            mem_st.rss_in_bytes = rss_in_pages * PAGE_SIZE;
+            stats_write_lmk_kill_occurred_pid(LMK_KILL_OCCURRED, uid, pid, oom_score_adj,
+                                              min_score_adj, 0, &mem_st);
+        }
+
+        free(taskname);
+    }
+}
+
+static bool init_poll_kernel() {
+    kpoll_fd = TEMP_FAILURE_RETRY(open("/proc/lowmemorykiller", O_RDONLY | O_NONBLOCK | O_CLOEXEC));
+
+    if (kpoll_fd < 0) {
+        ALOGE("kernel lmk event file could not be opened; errno=%d", errno);
+        return false;
+    }
+
+    return true;
+}
+
 static struct proc *pid_lookup(int pid) {
     struct proc *procp;
 
@@ -848,34 +1018,6 @@ static char *proc_get_name(int pid, char *buf, size_t buf_size) {
     return buf;
 }
 
-static bool claim_record(struct proc *procp, pid_t pid) {
-    if (procp->reg_pid == pid) {
-        /* Record already belongs to the registrant */
-        return true;
-    }
-    if (procp->reg_pid == 0) {
-        /* Old registrant is gone, claim the record */
-        procp->reg_pid = pid;
-        return true;
-    }
-    /* The record is owned by another registrant */
-    return false;
-}
-
-static void remove_claims(pid_t pid) {
-    int i;
-
-    for (i = 0; i < PIDHASH_SZ; i++) {
-        struct proc *procp = pidhash[i];
-        while (procp) {
-            if (procp->reg_pid == pid) {
-                procp->reg_pid = 0;
-            }
-            procp = procp->pidhash_next;
-        }
-    }
-}
-
 static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred *cred) {
     struct proc *procp;
     char path[LINE_MAX];
@@ -920,8 +1062,7 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     }
 
     if (use_inkernel_interface) {
-        stats_store_taskname(params.pid, proc_get_name(params.pid, path, sizeof(path)),
-                             kpoll_info.poll_fd);
+        stats_store_taskname(params.pid, proc_get_name(params.pid, path, sizeof(path)));
         return;
     }
 
@@ -1015,7 +1156,15 @@ static void cmd_procremove(LMKD_CTRL_PACKET packet, struct ucred *cred) {
     lmkd_pack_get_procremove(packet, &params);
 
     if (use_inkernel_interface) {
-        stats_remove_taskname(params.pid, kpoll_info.poll_fd);
+        /*
+         * Perform an extra check before the pid is removed, after which it
+         * will be impossible for poll_kernel to get the taskname. poll_kernel()
+         * is potentially a long-running blocking function; however this method
+         * handles AMS requests but does not block AMS.
+         */
+        poll_kernel(kpoll_fd);
+
+        stats_remove_taskname(params.pid);
         return;
     }
 
@@ -1198,81 +1347,6 @@ static void cmd_target(int ntargets, LMKD_CTRL_PACKET packet) {
     }
 }
 
-static void ctrl_data_close(int dsock_idx) {
-    struct epoll_event epev;
-
-    ALOGI("closing lmkd data connection");
-    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, data_sock[dsock_idx].sock, &epev) == -1) {
-        // Log a warning and keep going
-        ALOGW("epoll_ctl for data connection socket failed; errno=%d", errno);
-    }
-    maxevents--;
-
-    close(data_sock[dsock_idx].sock);
-    data_sock[dsock_idx].sock = -1;
-
-    /* Mark all records of the old registrant as unclaimed */
-    remove_claims(data_sock[dsock_idx].pid);
-}
-
-static ssize_t ctrl_data_read(int dsock_idx, char *buf, size_t bufsz, struct ucred *sender_cred) {
-    struct iovec iov = { buf, bufsz };
-    char control[CMSG_SPACE(sizeof(struct ucred))];
-    struct msghdr hdr = {
-        NULL, 0, &iov, 1, control, sizeof(control), 0,
-    };
-    ssize_t ret;
-
-    ret = TEMP_FAILURE_RETRY(recvmsg(data_sock[dsock_idx].sock, &hdr, 0));
-    if (ret == -1) {
-        ALOGE("control data socket read failed; %s", strerror(errno));
-        return -1;
-    }
-    if (ret == 0) {
-        ALOGE("Got EOF on control data socket");
-        return -1;
-    }
-
-    struct ucred* cred = NULL;
-    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&hdr);
-    while (cmsg != NULL) {
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS) {
-            cred = (struct ucred*)CMSG_DATA(cmsg);
-            break;
-        }
-        cmsg = CMSG_NXTHDR(&hdr, cmsg);
-    }
-
-    if (cred == NULL) {
-        ALOGE("Failed to retrieve sender credentials");
-        /* Close the connection */
-        ctrl_data_close(dsock_idx);
-        return -1;
-    }
-
-    memcpy(sender_cred, cred, sizeof(struct ucred));
-
-    /* Store PID of the peer */
-    data_sock[dsock_idx].pid = cred->pid;
-
-    return ret;
-}
-
-static int ctrl_data_write(int dsock_idx, char *buf, size_t bufsz) {
-    int ret = 0;
-
-    ret = TEMP_FAILURE_RETRY(write(data_sock[dsock_idx].sock, buf, bufsz));
-
-    if (ret == -1) {
-        ALOGE("control data socket write failed; errno=%d", errno);
-    } else if (ret == 0) {
-        ALOGE("Got EOF on control data socket");
-        ret = -1;
-    }
-
-    return ret;
-}
-
 static void ctrl_command_handler(int dsock_idx) {
     LMKD_CTRL_PACKET packet;
     struct ucred cred;
@@ -1326,6 +1400,10 @@ static void ctrl_command_handler(int dsock_idx) {
         len = lmkd_pack_set_getkillcnt_repl(packet, kill_cnt);
         if (ctrl_data_write(dsock_idx, (char *)packet, len) != len)
             return;
+        break;
+    case LMK_PROCKILL:
+        /* This command code is NOT expected at all */
+        ALOGE("Received unexpected command code %d", cmd);
         break;
     default:
         ALOGE("Received unknown command code %d", cmd);
@@ -1945,6 +2023,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reas
 
     stats_write_lmk_kill_occurred(LMK_KILL_OCCURRED, uid, taskname,
             procp->oomadj, min_oom_score, tasksize, mem_st);
+
+    ctrl_data_write_lmk_kill_occurred((pid_t)pid, uid);
 
     result = tasksize;
 
@@ -2703,7 +2783,7 @@ err_open_mpfd:
 
 static void kernel_event_handler(int data __unused, uint32_t events __unused,
                                  struct polling_params *poll_params __unused) {
-    kpoll_info.handler(kpoll_info.poll_fd);
+    poll_kernel(kpoll_fd);
 }
 
 static int init(void) {
@@ -2759,15 +2839,17 @@ static int init(void) {
 
     if (use_inkernel_interface) {
         ALOGI("Using in-kernel low memory killer interface");
-        if (init_poll_kernel(&kpoll_info)) {
+        if (init_poll_kernel()) {
             epev.events = EPOLLIN;
             epev.data.ptr = (void*)&kernel_poll_hinfo;
-            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, kpoll_info.poll_fd, &epev) != 0) {
+            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, kpoll_fd, &epev) != 0) {
                 ALOGE("epoll_ctl for lmk events failed (errno=%d)", errno);
-                close(kpoll_info.poll_fd);
-                kpoll_info.poll_fd = -1;
+                close(kpoll_fd);
+                kpoll_fd = -1;
             } else {
                 maxevents++;
+                /* let the others know it does support reporting kills */
+                property_set("sys.lmk.reportkills", "1");
             }
         }
     } else {
@@ -2787,6 +2869,8 @@ static int init(void) {
         } else {
             ALOGI("Using vmpressure for memory pressure detection");
         }
+        /* let the others know it does support reporting kills */
+        property_set("sys.lmk.reportkills", "1");
     }
 
     for (i = 0; i <= ADJTOSLOT(OOM_SCORE_ADJ_MAX); i++) {

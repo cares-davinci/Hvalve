@@ -181,9 +181,9 @@ stats_write_lmk_kill_occurred(int32_t code, int32_t uid, char const* process_nam
     return write_to_logger(log_ctx, LOG_ID_STATS);
 }
 
-static int stats_write_lmk_kill_occurred_pid(int32_t code, int32_t uid, int pid,
-                                      int32_t oom_score, int32_t min_oom_score, int tasksize,
-                                      struct memory_stat *mem_st) {
+int stats_write_lmk_kill_occurred_pid(int32_t code, int32_t uid, int pid, int32_t oom_score,
+                                      int32_t min_oom_score, int tasksize,
+                                      struct memory_stat* mem_st) {
     struct proc* proc = pid_lookup(pid);
     if (!proc) return -EINVAL;
 
@@ -290,65 +290,6 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
     return NULL;
 }
 
-static void poll_kernel(int poll_fd) {
-    if (poll_fd == -1) {
-        // not waiting
-        return;
-    }
-
-    while (1) {
-        char rd_buf[256];
-        int bytes_read =
-                TEMP_FAILURE_RETRY(pread(poll_fd, (void*)rd_buf, sizeof(rd_buf), 0));
-        if (bytes_read <= 0) break;
-        rd_buf[bytes_read] = '\0';
-
-        int64_t pid;
-        int64_t uid;
-        int64_t group_leader_pid;
-        int64_t rss_in_pages;
-        struct memory_stat mem_st = {};
-        int16_t oom_score_adj;
-        int16_t min_score_adj;
-        int64_t starttime;
-        char* taskname = 0;
-
-        int fields_read = sscanf(rd_buf,
-                                 "%" SCNd64 " %" SCNd64 " %" SCNd64 " %" SCNd64 " %" SCNd64
-                                 " %" SCNd64 " %" SCNd16 " %" SCNd16 " %" SCNd64 "\n%m[^\n]",
-                                 &pid, &uid, &group_leader_pid, &mem_st.pgfault,
-                                 &mem_st.pgmajfault, &rss_in_pages, &oom_score_adj,
-                                 &min_score_adj, &starttime, &taskname);
-
-        /* only the death of the group leader process is logged */
-        if (fields_read == 10 && group_leader_pid == pid) {
-            mem_st.process_start_time_ns = starttime * (NS_PER_SEC / sysconf(_SC_CLK_TCK));
-            mem_st.rss_in_bytes = rss_in_pages * PAGE_SIZE;
-            stats_write_lmk_kill_occurred_pid(LMK_KILL_OCCURRED, uid, pid, oom_score_adj,
-                                              min_score_adj, 0, &mem_st);
-        }
-
-        free(taskname);
-    }
-}
-
-bool init_poll_kernel(struct kernel_poll_info *poll_info) {
-    if (!enable_stats_log) {
-        return false;
-    }
-
-    poll_info->poll_fd =
-            TEMP_FAILURE_RETRY(open("/proc/lowmemorykiller", O_RDONLY | O_NONBLOCK | O_CLOEXEC));
-
-    if (poll_info->poll_fd < 0) {
-        ALOGE("kernel lmk event file could not be opened; errno=%d", errno);
-        return false;
-    }
-    poll_info->handler = poll_kernel;
-
-    return true;
-}
-
 static void proc_insert(struct proc* procp) {
     if (!pidhash) {
         pidhash = calloc(PIDHASH_SZ, sizeof(*pidhash));
@@ -359,18 +300,10 @@ static void proc_insert(struct proc* procp) {
     pidhash[hval] = procp;
 }
 
-void stats_remove_taskname(int pid, int poll_fd) {
+void stats_remove_taskname(int pid) {
     if (!enable_stats_log || !pidhash) {
         return;
     }
-
-    /*
-     * Perform an extra check before the pid is removed, after which it
-     * will be impossible for poll_kernel to get the taskname. poll_kernel()
-     * is potentially a long-running blocking function; however this method
-     * handles AMS requests but does not block AMS.
-     */
-    poll_kernel(poll_fd);
 
     int hval = pid_hashfn(pid);
     struct proc* procp;
@@ -391,7 +324,7 @@ void stats_remove_taskname(int pid, int poll_fd) {
     free(procp);
 }
 
-void stats_store_taskname(int pid, const char* taskname, int poll_fd) {
+void stats_store_taskname(int pid, const char* taskname) {
     if (!enable_stats_log) {
         return;
     }
@@ -401,7 +334,7 @@ void stats_store_taskname(int pid, const char* taskname, int poll_fd) {
         if (strcmp(procp->taskname, taskname) == 0) {
             return;
         }
-        stats_remove_taskname(pid, poll_fd);
+        stats_remove_taskname(pid);
     }
     procp = malloc(sizeof(struct proc));
     procp->pid = pid;
