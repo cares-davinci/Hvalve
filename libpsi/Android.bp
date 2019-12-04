@@ -5,7 +5,7 @@ cc_library_headers {
 
 cc_library {
     name: "libpsi",
-    srcs: ["psi.c"],
+    srcs: ["psi.cpp"],
     shared_libs: [
         "liblog"
     ],
