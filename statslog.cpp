@@ -16,13 +16,14 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <log/log.h>
 #include <log/log_id.h>
-#include <stats_event_list.h>
 #include <statslog.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/uio.h>
 #include <time.h>
 
 #ifdef LMKD_LOG_STATS
@@ -31,8 +32,7 @@
 #define STRINGIFY(x) STRINGIFY_INTERNAL(x)
 #define STRINGIFY_INTERNAL(x) #x
 
-static bool enable_stats_log;
-static android_log_context log_ctx;
+static bool enable_stats_log = property_get_bool("ro.lmk.log_stats", false);
 
 struct proc {
     int pid;
@@ -44,60 +44,18 @@ struct proc {
 static struct proc** pidhash = NULL;
 #define pid_hashfn(x) ((((x) >> 8) ^ (x)) & (PIDHASH_SZ - 1))
 
-static int64_t getElapsedRealTimeNs() {
-    struct timespec t;
-    t.tv_sec = t.tv_nsec = 0;
-    clock_gettime(CLOCK_BOOTTIME, &t);
-    return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
-}
-
-void statslog_init() {
-    enable_stats_log = property_get_bool("ro.lmk.log_stats", false);
-
-    if (enable_stats_log) {
-        log_ctx = create_android_logger(kStatsEventTag);
-    }
-}
-
-void statslog_destroy() {
-    if (log_ctx) {
-        android_log_destroy(&log_ctx);
-    }
-}
-
 /**
  * Logs the change in LMKD state which is used as start/stop boundaries for logging
  * LMK_KILL_OCCURRED event.
  * Code: LMK_STATE_CHANGED = 54
  */
 int
-stats_write_lmk_state_changed(int32_t code, int32_t state) {
-    int ret = -EINVAL;
-
-    if (!enable_stats_log) {
-        return ret;
+stats_write_lmk_state_changed(int32_t state) {
+    if (enable_stats_log) {
+        return android::lmkd::stats::stats_write(android::lmkd::stats::LMK_STATE_CHANGED, state);
+    } else {
+        return -EINVAL;
     }
-
-    assert(log_ctx != NULL);
-    if (!log_ctx) {
-        return ret;
-    }
-
-    reset_log_context(log_ctx);
-
-    if ((ret = android_log_write_int64(log_ctx, getElapsedRealTimeNs())) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, code)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, state)) < 0) {
-        return ret;
-    }
-
-    return write_to_logger(log_ctx, LOG_ID_STATS);
 }
 
 static struct proc* pid_lookup(int pid) {
@@ -116,78 +74,35 @@ static struct proc* pid_lookup(int pid) {
  * Code: LMK_KILL_OCCURRED = 51
  */
 int
-stats_write_lmk_kill_occurred(int32_t code, int32_t uid, char const* process_name,
+stats_write_lmk_kill_occurred(int32_t uid, char const* process_name,
                               int32_t oom_score, int32_t min_oom_score, int tasksize,
                               struct memory_stat *mem_st) {
-    int ret = -EINVAL;
-    if (!enable_stats_log) {
-        return ret;
+    if (enable_stats_log) {
+        return android::lmkd::stats::stats_write(
+                android::lmkd::stats::LMK_KILL_OCCURRED,
+                uid,
+                process_name,
+                oom_score,
+                mem_st ? mem_st->pgfault : -1,
+                mem_st ? mem_st->pgmajfault : -1,
+                mem_st ? mem_st->rss_in_bytes : tasksize * BYTES_IN_KILOBYTE,
+                mem_st ? mem_st->cache_in_bytes : -1,
+                mem_st ? mem_st->swap_in_bytes : -1,
+                mem_st ? mem_st->process_start_time_ns : -1,
+                min_oom_score
+        );
+    } else {
+        return -EINVAL;
     }
-    if (!log_ctx) {
-        return ret;
-    }
-    reset_log_context(log_ctx);
-
-    if ((ret = android_log_write_int64(log_ctx, getElapsedRealTimeNs())) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, code)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, uid)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_string8(log_ctx, (process_name == NULL) ? "" : process_name)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, oom_score)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->pgfault : -1)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->pgmajfault : -1)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->rss_in_bytes
-                                                       : tasksize * BYTES_IN_KILOBYTE)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->cache_in_bytes : -1)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->swap_in_bytes : -1)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int64(log_ctx, mem_st ? mem_st->process_start_time_ns
-                                                       : -1)) < 0) {
-        return ret;
-    }
-
-    if ((ret = android_log_write_int32(log_ctx, min_oom_score)) < 0) {
-        return ret;
-    }
-
-    return write_to_logger(log_ctx, LOG_ID_STATS);
 }
 
-int stats_write_lmk_kill_occurred_pid(int32_t code, int32_t uid, int pid, int32_t oom_score,
+int stats_write_lmk_kill_occurred_pid(int32_t uid, int pid, int32_t oom_score,
                                       int32_t min_oom_score, int tasksize,
                                       struct memory_stat* mem_st) {
     struct proc* proc = pid_lookup(pid);
     if (!proc) return -EINVAL;
 
-    return stats_write_lmk_kill_occurred(code, uid, proc->taskname, oom_score, min_oom_score,
+    return stats_write_lmk_kill_occurred(uid, proc->taskname, oom_score, min_oom_score,
                                          tasksize, mem_st);
 }
 
