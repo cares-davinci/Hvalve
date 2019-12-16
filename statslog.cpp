@@ -292,7 +292,7 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
 
 static void proc_insert(struct proc* procp) {
     if (!pidhash) {
-        pidhash = calloc(PIDHASH_SZ, sizeof(*pidhash));
+        pidhash = static_cast<struct proc**>(calloc(PIDHASH_SZ, sizeof(*pidhash)));
     }
 
     int hval = pid_hashfn(procp->pid);
@@ -336,7 +336,7 @@ void stats_store_taskname(int pid, const char* taskname) {
         }
         stats_remove_taskname(pid);
     }
-    procp = malloc(sizeof(struct proc));
+    procp = static_cast<struct proc*>(malloc(sizeof(struct proc)));
     procp->pid = pid;
     strncpy(procp->taskname, taskname, LINE_MAX - 1);
     procp->taskname[LINE_MAX - 1] = '\0';
