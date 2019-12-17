@@ -600,7 +600,7 @@ static char *reread_file(struct reread_data *data) {
 
     if (data->fd == -1) {
         /* First-time buffer initialization */
-        if (!buf && (buf = malloc(buf_size)) == NULL) {
+        if (!buf && (buf = static_cast<char*>(malloc(buf_size))) == nullptr) {
             return NULL;
         }
 
@@ -626,7 +626,7 @@ static char *reread_file(struct reread_data *data) {
          * Since we are reading /proc files we can't use fstat to find out
          * the real size of the file. Double the buffer size and keep retrying.
          */
-        if ((new_buf = realloc(buf, buf_size * 2)) == NULL) {
+        if ((new_buf = static_cast<char*>(realloc(buf, buf_size * 2))) == nullptr) {
             errno = ENOMEM;
             return NULL;
         }
@@ -818,13 +818,13 @@ static struct proc *pid_lookup(int pid) {
     return procp;
 }
 
-static void adjslot_insert(struct adjslot_list *head, struct adjslot_list *new)
+static void adjslot_insert(struct adjslot_list *head, struct adjslot_list *new_element)
 {
     struct adjslot_list *next = head->next;
-    new->prev = head;
-    new->next = next;
-    next->prev = new;
-    head->next = new;
+    new_element->prev = head;
+    new_element->next = next;
+    next->prev = new_element;
+    head->next = new_element;
 }
 
 static void adjslot_remove(struct adjslot_list *old)
@@ -1123,7 +1123,7 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
             }
         }
 
-        procp = calloc(1, sizeof(struct proc));
+        procp = static_cast<struct proc*>(calloc(1, sizeof(struct proc)));
         if (!procp) {
             // Oh, the irony.  May need to rebuild our state.
             return;
@@ -2415,7 +2415,6 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     unsigned long long evcount;
     int64_t mem_usage, memsw_usage;
     int64_t mem_pressure;
-    enum vmpressure_level lvl;
     union meminfo mi;
     struct zoneinfo zi;
     struct timespec curr_tm;
@@ -2443,12 +2442,12 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
          * and upgrade to the highest priority one. By reading
          * eventfd we also reset the event counters.
          */
-        for (lvl = VMPRESS_LEVEL_LOW; lvl < VMPRESS_LEVEL_COUNT; lvl++) {
+        for (int lvl = VMPRESS_LEVEL_LOW; lvl < VMPRESS_LEVEL_COUNT; lvl++) {
             if (mpevfd[lvl] != -1 &&
                 TEMP_FAILURE_RETRY(read(mpevfd[lvl],
                                    &evcount, sizeof(evcount))) > 0 &&
                 evcount > 0 && lvl > level) {
-                level = lvl;
+                level = static_cast<vmpressure_level>(lvl);
             }
         }
     }

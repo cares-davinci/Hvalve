@@ -13,7 +13,7 @@ cc_defaults {
 cc_binary {
     name: "lmkd",
 
-    srcs: ["lmkd.c"],
+    srcs: ["lmkd.cpp"],
     shared_libs: [
         "libcutils",
         "liblog",
@@ -33,7 +33,7 @@ cc_binary {
 
 cc_library_static {
     name: "libstatslogc",
-    srcs: ["statslog.c"],
+    srcs: ["statslog.cpp"],
     cflags: [
         "-Wall",
         "-Werror",
@@ -47,7 +47,7 @@ cc_library_static {
 
 cc_library_static {
     name: "liblmkd_utils",
-    srcs: ["liblmkd_utils.c"],
+    srcs: ["liblmkd_utils.cpp"],
     recovery_available: true,
     shared_libs: [
         "libcutils",
