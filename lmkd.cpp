@@ -174,7 +174,8 @@ enum vmpressure_level {
 static const char *level_name[] = {
     "low",
     "medium",
-    "critical"
+    "critical",
+    "super critical",
 };
 
 struct {
@@ -201,6 +202,7 @@ static int64_t downgrade_pressure;
 static bool low_ram_device;
 static bool kill_heaviest_task;
 static unsigned long kill_timeout_ms;
+static int direct_reclaim_pressure = 45;
 static bool use_minfree_levels;
 static bool per_app_memcg;
 static bool enhance_batch_kill;
@@ -2137,7 +2139,7 @@ static int zone_watermarks_ok(enum vmpressure_level level)
             if (w.lowmem_reserve[i] && (margin > w.lowmem_reserve[i]))
                 lowmem_reserve_ok[i] = true;
 
-        if (margin >= 0 || lowmem_reserve_ok[zone_id])
+        if (!s_crit_event && (margin >= 0 || lowmem_reserve_ok[zone_id]))
             continue;
 
         return file_cache_to_adj(level, w.free, nr_file);
@@ -2891,6 +2893,45 @@ no_kill:
     }
 }
 
+enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
+{
+    static union vmstat base;
+    union vmstat current;
+    int64_t throttle;
+    int64_t sync, async, pressure;
+
+    switch (level) {
+        case VMPRESS_LEVEL_LOW:
+            if (vmstat_parse(&base) < 0) {
+                ULMK_LOG(E, "Failed to parse vmstat!");
+                goto out;
+            }
+            break;
+        case VMPRESS_LEVEL_MEDIUM:
+        case VMPRESS_LEVEL_CRITICAL:
+            if (vmstat_parse(&current) < 0) {
+                ULMK_LOG(E, "Failed to parse vmstat!");
+                goto out;
+            }
+            throttle = current.field.pgscan_direct_throttle -
+                    base.field.pgscan_direct_throttle;
+            sync = current.field.pgscan_direct -
+                    base.field.pgscan_direct;
+            async = current.field.pgscan_kswapd -
+                    base.field.pgscan_kswapd;
+            pressure = ((100 * sync)/(sync + async + 1));
+            if (throttle || (pressure >= direct_reclaim_pressure)) {
+                s_crit_event = true;
+            }
+            base = current;
+            break;
+        default:
+            ;
+    }
+out:
+    return level;
+}
+
 static void mp_event_common(int data, uint32_t events, struct polling_params *poll_params) {
     int ret;
     unsigned long long evcount;
@@ -2913,6 +2954,9 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         .filename = MEMCG_MEMORYSW_USAGE,
         .fd = -1,
     };
+
+    if (!s_crit_event)
+        level = upgrade_vmpressure_event(level);
 
     if (debug_process_killing) {
         ALOGI("%s memory pressure event is triggered", level_name[level]);
@@ -3625,6 +3669,10 @@ int main(int argc __unused, char **argv __unused) {
                     level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL]);
           strlcpy(property, perf_wait_get_prop("ro.lmk.super_critical", default_value).value, PROPERTY_VALUE_MAX);
           level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
+          strlcpy(property, perf_wait_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value, PROPERTY_VALUE_MAX);
+          direct_reclaim_pressure = strtod(property, NULL);
 
           strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
           strlcpy(property, perf_wait_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
