@@ -242,6 +242,7 @@ struct event_handler_info {
 struct sock_event_handler_info {
     int sock;
     pid_t pid;
+    uint32_t async_event_mask;
     struct event_handler_info handler_info;
 };
 
@@ -749,7 +750,7 @@ static void ctrl_data_write_lmk_kill_occurred(pid_t pid, uid_t uid) {
     size_t len = lmkd_pack_set_prockills(packet, pid, uid);
 
     for (int i = 0; i < MAX_DATA_CONN; i++) {
-        if (data_sock[i].sock >= 0) {
+        if (data_sock[i].sock >= 0 && data_sock[i].async_event_mask & 1 << LMK_ASYNC_EVENT_KILL) {
             ctrl_data_write(i, (char*)packet, len);
         }
     }
@@ -1211,6 +1212,13 @@ static void cmd_procpurge(struct ucred *cred) {
     }
 }
 
+static void cmd_subscribe(int dsock_idx, LMKD_CTRL_PACKET packet) {
+    struct lmk_subscribe params;
+
+    lmkd_pack_get_subscribe(packet, &params);
+    data_sock[dsock_idx].async_event_mask |= 1 << params.evt_type;
+}
+
 static void inc_killcnt(int oomadj) {
     int slot = ADJTOSLOT(oomadj);
     uint8_t idx = killcnt_idx[slot];
@@ -1401,6 +1409,11 @@ static void ctrl_command_handler(int dsock_idx) {
         if (ctrl_data_write(dsock_idx, (char *)packet, len) != len)
             return;
         break;
+    case LMK_SUBSCRIBE:
+        if (nargs != 1)
+            goto wronglen;
+        cmd_subscribe(dsock_idx, packet);
+        break;
     case LMK_PROCKILL:
         /* This command code is NOT expected at all */
         ALOGE("Received unexpected command code %d", cmd);
@@ -1461,6 +1474,7 @@ static void ctrl_connect_handler(int data __unused, uint32_t events __unused,
     /* use data to store data connection idx */
     data_sock[free_dscock_idx].handler_info.data = free_dscock_idx;
     data_sock[free_dscock_idx].handler_info.handler = ctrl_data_handler;
+    data_sock[free_dscock_idx].async_event_mask = 0;
     epev.events = EPOLLIN;
     epev.data.ptr = (void *)&(data_sock[free_dscock_idx].handler_info);
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, data_sock[free_dscock_idx].sock, &epev) == -1) {
