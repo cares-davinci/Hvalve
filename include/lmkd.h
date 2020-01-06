@@ -27,11 +27,13 @@ __BEGIN_DECLS
  * Supported LMKD commands
  */
 enum lmk_cmd {
-    LMK_TARGET = 0,  /* Associate minfree with oom_adj_score */
-    LMK_PROCPRIO,    /* Register a process and set its oom_adj_score */
-    LMK_PROCREMOVE,  /* Unregister a process */
-    LMK_PROCPURGE,   /* Purge all registered processes */
-    LMK_GETKILLCNT,  /* Get number of kills */
+    LMK_TARGET = 0, /* Associate minfree with oom_adj_score */
+    LMK_PROCPRIO,   /* Register a process and set its oom_adj_score */
+    LMK_PROCREMOVE, /* Unregister a process */
+    LMK_PROCPURGE,  /* Purge all registered processes */
+    LMK_GETKILLCNT, /* Get number of kills */
+    LMK_SUBSCRIBE,  /* Subscribe for asynchronous events */
+    LMK_PROCKILL,   /* Unsolicited msg to subscribed clients on proc kills */
 };
 
 /*
@@ -199,6 +201,47 @@ static inline size_t lmkd_pack_set_getkillcnt_repl(LMKD_CTRL_PACKET packet, int 
     packet[0] = htonl(LMK_GETKILLCNT);
     packet[1] = htonl(kill_cnt);
     return 2 * sizeof(int);
+}
+
+/* Types of asyncronous events sent from lmkd to its clients */
+enum async_event_type {
+    LMK_ASYNC_EVENT_FIRST,
+    LMK_ASYNC_EVENT_KILL = LMK_ASYNC_EVENT_FIRST,
+    LMK_ASYNC_EVENT_COUNT,
+};
+
+/* LMK_SUBSCRIBE packet payload */
+struct lmk_subscribe {
+    enum async_event_type evt_type;
+};
+
+/*
+ * For LMK_SUBSCRIBE packet get its payload.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline void lmkd_pack_get_subscribe(LMKD_CTRL_PACKET packet, struct lmk_subscribe* params) {
+    params->evt_type = (enum async_event_type)ntohl(packet[1]);
+}
+
+/**
+ * Prepare LMK_SUBSCRIBE packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_set_subscribe(LMKD_CTRL_PACKET packet, enum async_event_type evt_type) {
+    packet[0] = htonl(LMK_SUBSCRIBE);
+    packet[1] = htonl((int)evt_type);
+    return 2 * sizeof(int);
+}
+
+/**
+ * Prepare LMK_PROCKILL unsolicited packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_set_prockills(LMKD_CTRL_PACKET packet, pid_t pid, uid_t uid) {
+    packet[0] = htonl(LMK_PROCKILL);
+    packet[1] = htonl(pid);
+    packet[2] = htonl(uid);
+    return 3 * sizeof(int);
 }
 
 __END_DECLS

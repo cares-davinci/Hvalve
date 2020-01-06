@@ -88,3 +88,13 @@ properties:
   ro.lmk.psi_complete_stall_ms: complete PSI stall threshold in milliseconds for
                              triggering critical memory notification. Default =
                              700
+
+lmkd will set the following Android properties according to current system
+configurations:
+
+  sys.lmk.minfree_levels:    minfree:oom_adj_score pairs, delimited by comma
+
+  sys.lmk.reportkills:       whether or not it supports reporting process kills
+                             to clients. Test app should check this property
+                             before testing low memory kill notification.
+                             Default will be unset.
