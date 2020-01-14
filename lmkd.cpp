@@ -1923,7 +1923,7 @@ static char *nextln(char *buf)
 {
     char *x;
 
-    x = memchr(buf, '\n', strlen(buf));
+    x = static_cast<char*>(memchr(buf, '\n', strlen(buf)));
     if (!x)
         return buf + strlen(buf);
     return x + 1;
@@ -2227,7 +2227,7 @@ repeat:
 
         procp = pid_lookup(pid);
         if (!procp) {
-            procp = malloc(sizeof(*procp));
+            procp = static_cast<struct proc *>(malloc(sizeof(*procp)));
             if (!procp)
                 break;
 
