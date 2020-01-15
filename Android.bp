@@ -22,6 +22,7 @@ cc_binary {
     ],
     static_libs: [
         "libstatslogc",
+        "libstatslog_lmkd",
         "libstatssocket",
     ],
     local_include_dirs: ["include"],
@@ -42,7 +43,38 @@ cc_library_static {
     shared_libs: [
         "liblog",
     ],
-    static_libs: ["libstatssocket",],
+    static_libs: [
+        "libstatslog_lmkd",
+    ],
+}
+
+genrule {
+    name: "statslog_lmkd.h",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --header $(genDir)/statslog_lmkd.h --module lmkd --namespace android,lmkd,stats",
+    out: [
+        "statslog_lmkd.h",
+    ],
+}
+
+genrule {
+    name: "statslog_lmkd.cpp",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --cpp $(genDir)/statslog_lmkd.cpp --module lmkd --namespace android,lmkd,stats --importHeader statslog_lmkd.h",
+    out: [
+        "statslog_lmkd.cpp",
+    ],
+}
+
+cc_library_static {
+    name: "libstatslog_lmkd",
+    generated_sources: ["statslog_lmkd.cpp"],
+    generated_headers: ["statslog_lmkd.h"],
+    export_generated_headers: ["statslog_lmkd.h"],
+    static_libs: [
+        "libcutils",
+        "libstatssocket",
+    ],
 }
 
 cc_library_static {
