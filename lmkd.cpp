@@ -25,6 +25,7 @@
 #include <pwd.h>
 #include <sched.h>
 #include <signal.h>
+#include <statslog_lmkd.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -826,7 +827,7 @@ static void poll_kernel(int poll_fd) {
             ctrl_data_write_lmk_kill_occurred((pid_t)pid, (uid_t)uid);
             mem_st.process_start_time_ns = starttime * (NS_PER_SEC / sysconf(_SC_CLK_TCK));
             mem_st.rss_in_bytes = rss_in_pages * PAGE_SIZE;
-            stats_write_lmk_kill_occurred_pid(LMK_KILL_OCCURRED, uid, pid, oom_score_adj,
+            stats_write_lmk_kill_occurred_pid(uid, pid, oom_score_adj,
                                               min_score_adj, 0, &mem_st);
         }
 
@@ -2420,8 +2421,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reas
               uid, procp->oomadj, tasksize * page_k);
     }
 
-    stats_write_lmk_kill_occurred(LMK_KILL_OCCURRED, uid, taskname,
-            procp->oomadj, min_oom_score, tasksize, mem_st);
+    stats_write_lmk_kill_occurred(uid, taskname, procp->oomadj, min_oom_score, tasksize, mem_st);
 
     ctrl_data_write_lmk_kill_occurred((pid_t)pid, uid);
 
@@ -2462,8 +2462,8 @@ retry:
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
-                    stats_write_lmk_state_changed(LMK_STATE_CHANGED,
-                                                  LMK_STATE_CHANGE_START);
+                    stats_write_lmk_state_changed(
+                            android::lmkd::stats::LMK_STATE_CHANGED__STATE__START);
                 }
                 break;
             }
@@ -2480,7 +2480,7 @@ retry:
     }
 
     if (lmk_state_change_start) {
-        stats_write_lmk_state_changed(LMK_STATE_CHANGED, LMK_STATE_CHANGE_STOP);
+        stats_write_lmk_state_changed(android::lmkd::stats::LMK_STATE_CHANGED__STATE__STOP);
     }
 
     return killed_size;
@@ -3571,8 +3571,6 @@ int main(int argc __unused, char **argv __unused) {
 
     ctx = create_android_logger(KILLINFO_LOG_TAG);
 
-    statslog_init();
-
     if (!init()) {
         if (!use_inkernel_interface) {
             /*
@@ -3599,8 +3597,6 @@ int main(int argc __unused, char **argv __unused) {
 
         mainloop();
     }
-
-    statslog_destroy();
 
     android_log_destroy(&ctx);
 
