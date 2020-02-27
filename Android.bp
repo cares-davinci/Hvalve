@@ -19,11 +19,11 @@ cc_binary {
         "liblog",
         "libprocessgroup",
         "libpsi",
+        "libstatssocket",
     ],
     static_libs: [
         "libstatslogc",
         "libstatslog_lmkd",
-        "libstatssocket",
     ],
     local_include_dirs: ["include"],
     cflags: ["-Werror", "-DLMKD_TRACE_KILLS"],
@@ -71,8 +71,7 @@ cc_library_static {
     generated_sources: ["statslog_lmkd.cpp"],
     generated_headers: ["statslog_lmkd.h"],
     export_generated_headers: ["statslog_lmkd.h"],
-    static_libs: [
-        "libcutils",
+    shared_libs: [
         "libstatssocket",
     ],
 }
