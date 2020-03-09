@@ -251,6 +251,7 @@ void runMemStressTest() {
             params.pid = pid;
             params.uid = uid;
             params.oomadj = data->oomadj;
+            params.ptype = PROC_TYPE_APP;
             ASSERT_FALSE(lmkd_register_proc(sock, &params) < 0)
                 << "Failed to communicate with lmkd, err=" << strerror(errno);
             // signal the child it can proceed
