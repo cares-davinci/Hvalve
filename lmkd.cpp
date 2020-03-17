@@ -216,7 +216,6 @@ static int thrashing_limit_pct;
 static int thrashing_limit_decay_pct;
 static bool use_psi_monitors = false;
 static bool enable_preferred_apps =  false;
-static bool s_crit_event = false;
 static unsigned long pa_update_timeout_ms = 60000; /* 1 min */
 static int kpoll_fd;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
@@ -564,6 +563,10 @@ static uint8_t killcnt_idx[ADJTOSLOT_COUNT];
 static uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
 static int killcnt_free_idx = 0;
 static uint32_t killcnt_total = 0;
+
+/* Super critical event related variables. */
+static union vmstat s_crit_base;
+static bool s_crit_event = false;
 
 /* PAGE_SIZE / 1024 */
 static long page_k;
@@ -2922,6 +2925,7 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
             pressure = ((100 * sync)/(sync + async + 1));
             if (throttle || (pressure >= direct_reclaim_pressure)) {
                 s_crit_event = true;
+                s_crit_base = current;
             }
             base = current;
             break;
@@ -2939,6 +2943,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     int64_t mem_pressure;
     union meminfo mi;
     struct zoneinfo zi;
+    union vmstat s_crit_current;
     struct timespec curr_tm;
     static struct timespec last_pa_update_tm;
     static unsigned long kill_skip_count = 0;
@@ -2990,10 +2995,25 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
          * rather than due to epoll_event timeout.
          */
         if (events) {
-            if (data == VMPRESS_LEVEL_SUPER_CRITICAL)
+            if (data == VMPRESS_LEVEL_SUPER_CRITICAL) {
                 s_crit_event = true;
-            else
-                s_crit_event = false;
+                vmstat_parse(&s_crit_base);
+            }
+            else if (s_crit_event) {
+                /* Override the supercritical event only if the system
+                 * is not in direct reclaim.
+                 */
+                int64_t throttle, sync;
+
+                vmstat_parse(&s_crit_current);
+                throttle = s_crit_current.field.pgscan_direct_throttle -
+                            s_crit_base.field.pgscan_direct_throttle;
+                sync = s_crit_current.field.pgscan_direct -
+                        s_crit_base.field.pgscan_direct;
+                if (!throttle && !sync)
+                    s_crit_event = false;
+                s_crit_base = s_crit_current;
+            }
         }
     }
 
