@@ -17,6 +17,7 @@
 #define LOG_TAG "libpsi"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/epoll.h>
 
