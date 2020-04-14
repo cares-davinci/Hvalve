@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <log/log.h>
 #include <log/log_id.h>
 #include <statslog.h>
