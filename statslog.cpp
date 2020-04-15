@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <unistd.h>
 
 #ifdef LMKD_LOG_STATS
 
