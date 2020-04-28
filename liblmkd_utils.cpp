@@ -53,6 +53,30 @@ int lmkd_unregister_proc(int sock, struct lmk_procremove *params) {
     return (ret < 0) ? -1 : 0;
 }
 
+enum update_props_result lmkd_update_props(int sock) {
+    LMKD_CTRL_PACKET packet;
+    size_t size;
+
+    size = lmkd_pack_set_update_props(packet);
+    if (TEMP_FAILURE_RETRY(write(sock, packet, size)) < 0) {
+        return UPDATE_PROPS_SEND_ERR;
+    }
+
+    size = TEMP_FAILURE_RETRY(read(sock, packet, CTRL_PACKET_MAX_SIZE));
+    if (size < 0) {
+        return UPDATE_PROPS_RECV_ERR;
+    }
+
+    if (size != 2 * sizeof(int) || lmkd_pack_get_cmd(packet) != LMK_UPDATE_PROPS) {
+        return UPDATE_PROPS_FORMAT_ERR;
+    }
+
+    struct lmk_update_props_reply params;
+    lmkd_pack_get_update_props_repl(packet, &params);
+
+    return params.result == 0 ? UPDATE_PROPS_SUCCESS : UPDATE_PROPS_FAIL;
+}
+
 int create_memcg(uid_t uid, pid_t pid) {
     char buf[256];
     int tasks_file;
