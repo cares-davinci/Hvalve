@@ -125,11 +125,15 @@
 #define PSI_POLL_PERIOD_SHORT_MS 10
 /* Polling period after PSI signal when pressure is low */
 #define PSI_POLL_PERIOD_LONG_MS 100
+/* PSI complete stall for super critical events */
+#define PSI_SCRIT_COMPLETE_STALL_MS (75)
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
 #define FAIL_REPORT_RLIMIT_MS 1000
+
+#define SZ_4G (0x100000000ULL)
 
 #define PSI_PROC_TRAVERSE_DELAY_MS 200
 /*
@@ -205,6 +209,7 @@ static bool low_ram_device;
 static bool kill_heaviest_task;
 static unsigned long kill_timeout_ms;
 static int direct_reclaim_pressure = 45;
+static int reclaim_scan_threshold = 1024;
 static bool use_minfree_levels;
 static bool force_use_old_strategy;
 static bool per_app_memcg;
@@ -219,13 +224,18 @@ static int thrashing_limit_pct;
 static int thrashing_limit_decay_pct;
 static bool use_psi_monitors = false;
 static bool enable_preferred_apps =  false;
+static bool last_event_upgraded = false;
+static int count_upgraded_event;
 static long pa_update_timeout_ms = 60000; /* 1 min */
 static int kpoll_fd;
+/* PSI window related variables */
+static int psi_window_size_ms = PSI_WINDOW_SIZE_MS;
+static int psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_SOME, 70 },    /* 70ms out of 1sec for partial stall */
     { PSI_SOME, 100 },   /* 100ms out of 1sec for partial stall */
     { PSI_FULL, 70 },    /* 70ms out of 1sec for complete stall */
-    { PSI_FULL, 80 },    /* 80ms out of 1sec for complete stall */
+    { PSI_FULL, PSI_SCRIT_COMPLETE_STALL_MS }, /* Default 80ms out of 1sec for complete stall */
 };
 
 static android_log_context ctx;
@@ -390,7 +400,8 @@ struct zoneinfo {
 
 /* Fields to parse in /proc/meminfo */
 enum meminfo_field {
-    MI_NR_FREE_PAGES = 0,
+    MI_NR_TOTAL_PAGES = 0,
+    MI_NR_FREE_PAGES,
     MI_CACHED,
     MI_SWAP_CACHED,
     MI_BUFFERS,
@@ -413,6 +424,7 @@ enum meminfo_field {
 };
 
 static const char* const meminfo_field_names[MI_FIELD_COUNT] = {
+    "MemTotal:",
     "MemFree:",
     "Cached:",
     "SwapCached:",
@@ -436,6 +448,7 @@ static const char* const meminfo_field_names[MI_FIELD_COUNT] = {
 
 union meminfo {
     struct {
+        int64_t nr_total_pages;
         int64_t nr_free_pages;
         int64_t cached;
         int64_t swap_cached;
@@ -585,6 +598,7 @@ static uint32_t killcnt_total = 0;
 /* Super critical event related variables. */
 static union vmstat s_crit_base;
 static bool s_crit_event = false;
+static bool s_crit_event_upgraded = false;
 
 /* PAGE_SIZE / 1024 */
 static long page_k;
@@ -2098,7 +2112,7 @@ static void trace_log(const char *fmt, ...)
     trace_log(fmt);            \
 })
 
-static int file_cache_to_adj(enum vmpressure_level lvl, int nr_free,
+static int file_cache_to_adj(enum vmpressure_level __unused lvl, int nr_free,
 int nr_file)
 {
     int min_score_adj = OOM_SCORE_ADJ_MAX + 1;
@@ -2132,10 +2146,10 @@ int nr_file)
     }
 
     /* Adjust the selected adj in accordance with pressure. */
-    if (s_crit_event && (min_score_adj > s_crit_adj_level)) {
+    if (s_crit_event && !s_crit_event_upgraded && (min_score_adj > s_crit_adj_level)) {
         min_score_adj = s_crit_adj_level;
     } else {
-        if (lvl == VMPRESS_LEVEL_CRITICAL &&
+        if (s_crit_event_upgraded &&
                 nr_free < lowmem_minfree[lowmem_targets_size -1] &&
                 nr_file < crit_minfree &&
                 min_score_adj > s_crit_adj_level) {
@@ -2144,6 +2158,12 @@ int nr_file)
     }
 
 out:
+    /*
+     * If event is upgraded, just allow one kill in that window. This
+     * is to avoid the aggressiveness of kills by upgrading the event.
+     */
+    if (s_crit_event_upgraded)
+	    s_crit_event_upgraded = s_crit_event = false;
     ULMK_LOG(E, "adj:%d file_cache: %d\n", min_score_adj, nr_file);
     return min_score_adj;
 }
@@ -3116,8 +3136,8 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
 {
     static union vmstat base;
     union vmstat current;
-    int64_t throttle;
-    int64_t sync, async, pressure;
+    int64_t throttle, pressure;
+    static int64_t sync, async;
 
     switch (level) {
         case VMPRESS_LEVEL_LOW:
@@ -3134,14 +3154,23 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
             }
             throttle = current.field.pgscan_direct_throttle -
                     base.field.pgscan_direct_throttle;
-            sync = current.field.pgscan_direct -
-                    base.field.pgscan_direct;
-            async = current.field.pgscan_kswapd -
-                    base.field.pgscan_kswapd;
-            pressure = ((100 * sync)/(sync + async + 1));
-            if (throttle || (pressure >= direct_reclaim_pressure)) {
-                s_crit_event = true;
-                s_crit_base = current;
+	    sync += (current.field.pgscan_direct -
+		     base.field.pgscan_direct);
+	    async += (current.field.pgscan_kswapd -
+		      base.field.pgscan_kswapd);
+	    /* Here scan window size is put at default 4MB(=1024 pages). */
+	    if (throttle || (sync + async) >= reclaim_scan_threshold) {
+		    pressure = ((100 * sync)/(sync + async + 1));
+		    if (throttle || (pressure >= direct_reclaim_pressure)) {
+			    last_event_upgraded = true;
+			    if (count_upgraded_event >= 4) {
+				    count_upgraded_event = 0;
+				    s_crit_event = true;
+			    } else
+				    s_crit_event = s_crit_event_upgraded = true;
+			    s_crit_base = current;
+		    }
+		    sync = async = 0;
             }
             base = current;
             break;
@@ -3212,6 +3241,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         if (events) {
             if (data == VMPRESS_LEVEL_SUPER_CRITICAL) {
                 s_crit_event = true;
+		poll_params->polling_interval_ms = psi_poll_period_scrit_ms;
                 vmstat_parse(&s_crit_base);
             }
             else if (s_crit_event) {
@@ -3445,7 +3475,7 @@ static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
 
     fd = init_psi_monitor(psi_thresholds[level].stall_type,
         psi_thresholds[level].threshold_ms * US_PER_MS,
-        PSI_WINDOW_SIZE_MS * US_PER_MS);
+        psi_window_size_ms * US_PER_MS);
 
     if (fd < 0) {
         return false;
@@ -3647,6 +3677,7 @@ static int init(void) {
     };
     struct epoll_event epev;
     int pidfd;
+    union meminfo info;
     int i;
     int ret;
 
@@ -3654,6 +3685,32 @@ static int init(void) {
     if (page_k == -1)
         page_k = PAGE_SIZE;
     page_k /= 1024;
+
+    if (force_use_old_strategy) {
+	    if (!meminfo_parse(&info)) {
+		    /*
+		     * Set the optimal settings for lowram targets.
+		     */
+		    if (info.field.nr_total_pages < (int64_t)(SZ_4G / PAGE_SIZE)) {
+			    if (psi_window_size_ms > 500) {
+				    psi_window_size_ms = 500;
+				    ULMK_LOG(I, "PSI window size is changed to %dms\n", psi_window_size_ms);
+			    }
+			    if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_LONG_MS) {
+				    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_LONG_MS;
+				    ULMK_LOG(I, "PSI poll period for super critical event is changed to %dms\n",psi_poll_period_scrit_ms);
+			    }
+		    }
+	    } else
+		    ULMK_LOG(E, "Failed to parse the meminfo\n");
+    }
+
+    /*
+     * Ensure min polling period for supercritical event is no less than
+     * PSI_POLL_PERIOD_SHORT_MS.
+     */
+    if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_SHORT_MS)
+	    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
 
     epollfd = epoll_create(MAX_EPOLL_EVENTS);
     if (epollfd == -1) {
@@ -3779,7 +3836,7 @@ static void call_handler(struct event_handler_info* handler_info,
         resume_polling(poll_params, curr_tm);
         break;
     case POLLING_DO_NOT_CHANGE:
-        if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
+        if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > psi_window_size_ms) {
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
             poll_params->paused_handler = NULL;
@@ -3787,6 +3844,58 @@ static void call_handler(struct event_handler_info* handler_info,
         }
         break;
     }
+}
+
+static bool have_psi_events(struct epoll_event *evt, int nevents)
+{
+	int i;
+	struct event_handler_info* handler_info;
+
+	for (i = 0; i < nevents; i++, evt++) {
+		if (evt->events & (EPOLLERR | EPOLLHUP))
+			continue;
+		if (evt->data.ptr) {
+			handler_info = (struct event_handler_info*)evt->data.ptr;
+			if (handler_info->handler == mp_event_common)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+static void check_cont_lmkd_events(int lvl)
+{
+	static struct timespec tmed, tcrit, tupgrad;
+	struct timespec now, prev;
+
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+
+	if (lvl == VMPRESS_LEVEL_MEDIUM) {
+		prev = tmed;
+		tmed = now;
+	}else {
+		prev = tcrit;
+		tcrit = now;
+	}
+
+	/*
+	 * Consider it as contiguous if two successive medium/critical events fall
+	 * in window + 1/2(window) period.
+	 */
+	if (get_time_diff_ms(&prev, &now) < ((psi_window_size_ms * 3) >> 1)) {
+		if (get_time_diff_ms(&tupgrad, &now) > psi_window_size_ms) {
+			if (last_event_upgraded) {
+				count_upgraded_event++;
+				last_event_upgraded = false;
+				tupgrad = now;
+			} else {
+				count_upgraded_event = 0;
+			}
+		}
+	} else {
+		count_upgraded_event = 0;
+	}
 }
 
 static void mainloop(void) {
@@ -3798,11 +3907,15 @@ static void mainloop(void) {
 
     poll_params.poll_handler = NULL;
     poll_params.paused_handler = NULL;
+    union vmstat poll1, poll2;
 
+    memset(&poll1, 0, sizeof(union vmstat));
+    memset(&poll2, 0, sizeof(union vmstat));
     while (1) {
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int nevents;
         int i;
+	bool skip_call_handler = false;
 
         if (poll_params.poll_handler) {
             bool poll_now;
@@ -3831,7 +3944,19 @@ static void mainloop(void) {
                     poll_params.polling_interval_ms);
             }
             if (poll_now) {
-                call_handler(poll_params.poll_handler, &poll_params, 0);
+		if (force_use_old_strategy) {
+			if (s_crit_event) {
+				vmstat_parse(&poll2);
+				if ((nevents > 0 && have_psi_events(events, nevents)) ||
+				    (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
+				    !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
+				    !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle)))
+					skip_call_handler = true;
+				poll1 = poll2;
+			}
+		}
+		if (!skip_call_handler)
+			call_handler(poll_params.poll_handler, &poll_params, 0);
             }
         } else {
             if (kill_timeout_ms && is_waiting_for_kill()) {
@@ -3886,6 +4011,11 @@ static void mainloop(void) {
             }
             if (evt->data.ptr) {
                 handler_info = (struct event_handler_info*)evt->data.ptr;
+		if (force_use_old_strategy && handler_info->handler == mp_event_common &&
+			(handler_info->data == VMPRESS_LEVEL_MEDIUM ||
+			  handler_info->data == VMPRESS_LEVEL_CRITICAL)) {
+			check_cont_lmkd_events(handler_info->data);
+		}
                 call_handler(handler_info, &poll_params, evt->events);
             }
         }
@@ -3987,6 +4117,22 @@ static void update_perf_props() {
           snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
           strlcpy(property, perf_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value, PROPERTY_VALUE_MAX);
           direct_reclaim_pressure = strtod(property, NULL);
+
+	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_WINDOW_SIZE_MS);
+	  strlcpy(property, perf_get_prop("ro.lmk.psi_window_size_ms", default_value).value, PROPERTY_VALUE_MAX);
+	  psi_window_size_ms = strtod(property, NULL);
+
+	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_SCRIT_COMPLETE_STALL_MS);
+	  strlcpy(property, perf_get_prop("ro.lmk.psi_scrit_complete_stall_ms", default_value).value, PROPERTY_VALUE_MAX);
+	  psi_thresholds[VMPRESS_LEVEL_SUPER_CRITICAL].threshold_ms = strtod(property, NULL);
+
+	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_POLL_PERIOD_SHORT_MS);
+	  strlcpy(property, perf_get_prop("ro.lmk.psi_poll_period_scrit_ms", default_value).value, PROPERTY_VALUE_MAX);
+	  psi_poll_period_scrit_ms = strtod(property, NULL);
+
+	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", reclaim_scan_threshold);
+	  strlcpy(property, perf_get_prop("ro.lmk.reclaim_scan_threshold", default_value).value, PROPERTY_VALUE_MAX);
+	  reclaim_scan_threshold = strtod(property, NULL);
 
           strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
           strlcpy(property, perf_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
