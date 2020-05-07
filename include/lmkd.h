@@ -34,6 +34,7 @@ enum lmk_cmd {
     LMK_GETKILLCNT, /* Get number of kills */
     LMK_SUBSCRIBE,  /* Subscribe for asynchronous events */
     LMK_PROCKILL,   /* Unsolicited msg to subscribed clients on proc kills */
+    LMK_UPDATE_PROPS, /* Reinit properties */
 };
 
 /*
@@ -242,6 +243,39 @@ static inline size_t lmkd_pack_set_prockills(LMKD_CTRL_PACKET packet, pid_t pid,
     packet[1] = htonl(pid);
     packet[2] = htonl(uid);
     return 3 * sizeof(int);
+}
+
+/*
+ * Prepare LMK_UPDATE_PROPS packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_set_update_props(LMKD_CTRL_PACKET packet) {
+    packet[0] = htonl(LMK_UPDATE_PROPS);
+    return sizeof(int);
+}
+
+/*
+ * Prepare LMK_UPDATE_PROPS reply packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_set_update_props_repl(LMKD_CTRL_PACKET packet, int result) {
+    packet[0] = htonl(LMK_UPDATE_PROPS);
+    packet[1] = htonl(result);
+    return 2 * sizeof(int);
+}
+
+/* LMK_PROCPRIO reply payload */
+struct lmk_update_props_reply {
+    int result;
+};
+
+/*
+ * For LMK_UPDATE_PROPS reply payload.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline void lmkd_pack_get_update_props_repl(LMKD_CTRL_PACKET packet,
+                                          struct lmk_update_props_reply* params) {
+    params->result = ntohl(packet[1]);
 }
 
 __END_DECLS
