@@ -24,6 +24,7 @@ cc_binary {
     static_libs: [
         "libstatslogc",
         "libstatslog_lmkd",
+        "liblmkd_utils",
     ],
     local_include_dirs: ["include"],
     cflags: ["-Werror", "-DLMKD_TRACE_KILLS"],
