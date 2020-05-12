@@ -55,7 +55,7 @@ int lmkd_unregister_proc(int sock, struct lmk_procremove *params) {
 
 enum update_props_result lmkd_update_props(int sock) {
     LMKD_CTRL_PACKET packet;
-    size_t size;
+    int size;
 
     size = lmkd_pack_set_update_props(packet);
     if (TEMP_FAILURE_RETRY(write(sock, packet, size)) < 0) {
