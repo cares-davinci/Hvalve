@@ -21,6 +21,8 @@
 #include <sys/epoll.h>
 
 #include <log/log.h>
+#include <cutils/fs.h>
+#include <stdio.h>
 #include "psi/psi.h"
 
 #define PSI_MON_FILE_MEMORY "/proc/pressure/memory"
