@@ -129,8 +129,7 @@
  * System property defaults
  */
 /* ro.lmk.swap_free_low_percentage property defaults */
-#define DEF_LOW_SWAP_LOWRAM 10
-#define DEF_LOW_SWAP 20
+#define DEF_LOW_SWAP 10
 /* ro.lmk.thrashing_limit property defaults */
 #define DEF_THRASHING_LOWRAM 30
 #define DEF_THRASHING 100
@@ -3195,7 +3194,7 @@ static void update_props() {
     per_app_memcg =
         property_get_bool("ro.config.per_app_memcg", low_ram_device);
     swap_free_low_percentage = clamp(0, 100, property_get_int32("ro.lmk.swap_free_low_percentage",
-        low_ram_device ? DEF_LOW_SWAP_LOWRAM : DEF_LOW_SWAP));
+        DEF_LOW_SWAP));
     psi_partial_stall_ms = property_get_int32("ro.lmk.psi_partial_stall_ms",
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = property_get_int32("ro.lmk.psi_complete_stall_ms",
