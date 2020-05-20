@@ -2400,7 +2400,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", wmark > WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     } else if (reclaim == DIRECT_RECLAIM && thrashing > thrashing_limit) {
         /* Page cache is thrashing while in direct reclaim (mostly happens on lowram devices) */
         kill_reason = DIRECT_RECL_AND_THRASHING;
@@ -2408,7 +2408,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     }
 
     /* Kill a process if necessary */
