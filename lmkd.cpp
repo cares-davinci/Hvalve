@@ -2273,20 +2273,22 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     bool cut_thrashing_limit = false;
     int min_score_adj = 0;
 
-    /* Skip while still killing a process */
-    if (is_kill_pending()) {
-        goto no_kill;
-    }
-    /*
-     * Process is dead, stop waiting. This has no effect if pidfds are supported and
-     * death notification already caused waiting to stop.
-     */
-    stop_wait_for_proc_kill(true);
-
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
         return;
     }
+
+    bool kill_pending = is_kill_pending();
+    if (kill_pending &&
+        (kill_timeout_ms == 0 || get_time_diff_ms(&last_kill_tm, &curr_tm) < kill_timeout_ms)) {
+        /* Skip while still killing a process */
+        goto no_kill;
+    }
+    /*
+     * Process is dead or kill timeout is over, stop waiting. This has no effect if pidfds are
+     * supported and death notification already caused waiting to stop.
+     */
+    stop_wait_for_proc_kill(!kill_pending);
 
     if (vmstat_parse(&vs) < 0) {
         ALOGE("Failed to parse vmstat!");
@@ -2985,6 +2987,15 @@ static int init(void) {
     return 0;
 }
 
+static bool polling_paused(struct polling_params *poll_params) {
+    return poll_params->paused_handler != NULL;
+}
+
+static void resume_polling(struct polling_params *poll_params, struct timespec curr_tm) {
+    poll_params->poll_start_tm = curr_tm;
+    poll_params->poll_handler = poll_params->paused_handler;
+}
+
 static void call_handler(struct event_handler_info* handler_info,
                          struct polling_params *poll_params, uint32_t events) {
     struct timespec curr_tm;
@@ -3011,8 +3022,7 @@ static void call_handler(struct event_handler_info* handler_info,
         poll_params->poll_handler = NULL;
         break;
     case POLLING_RESUME:
-        poll_params->poll_start_tm = curr_tm;
-        poll_params->poll_handler = poll_params->paused_handler;
+        resume_polling(poll_params, curr_tm);
         break;
     case POLLING_DO_NOT_CHANGE:
         if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
@@ -3069,8 +3079,23 @@ static void mainloop(void) {
                 call_handler(poll_params.poll_handler, &poll_params, 0);
             }
         } else {
-            /* Wait for events with no timeout */
-            nevents = epoll_wait(epollfd, events, maxevents, -1);
+            if (kill_timeout_ms && is_waiting_for_kill()) {
+                clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                delay = kill_timeout_ms - get_time_diff_ms(&last_kill_tm, &curr_tm);
+                /* Wait for pidfds notification or kill timeout to expire */
+                nevents = (delay > 0) ? epoll_wait(epollfd, events, maxevents, delay) : 0;
+                if (nevents == 0) {
+                    /* Kill notification timed out */
+                    stop_wait_for_proc_kill(false);
+                    if (polling_paused(&poll_params)) {
+                        clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                        resume_polling(&poll_params, curr_tm);
+                    }
+                }
+            } else {
+                /* Wait for events with no timeout */
+                nevents = epoll_wait(epollfd, events, maxevents, -1);
+            }
         }
 
         if (nevents == -1) {
