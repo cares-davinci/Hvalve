@@ -129,8 +129,7 @@
  * System property defaults
  */
 /* ro.lmk.swap_free_low_percentage property defaults */
-#define DEF_LOW_SWAP_LOWRAM 10
-#define DEF_LOW_SWAP 20
+#define DEF_LOW_SWAP 10
 /* ro.lmk.thrashing_limit property defaults */
 #define DEF_THRASHING_LOWRAM 30
 #define DEF_THRASHING 100
@@ -2397,12 +2396,20 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         snprintf(kill_desc, sizeof(kill_desc), "device is low on swap (%" PRId64
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (swap_is_low && wmark < WMARK_HIGH) {
         /* Both free memory and swap are low */
         kill_reason = LOW_MEM_AND_SWAP;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap is low (%"
             PRId64 "kB < %" PRId64 "kB)", wmark > WMARK_LOW ? "min" : "low",
             mi.field.free_swap * page_k, swap_low_threshold * page_k);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (wmark < WMARK_HIGH && swap_util_max < 100 &&
                (swap_util = calc_swap_utilization(&mi)) > swap_util_max) {
         /*
@@ -2420,7 +2427,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", wmark > WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     } else if (reclaim == DIRECT_RECLAIM && thrashing > thrashing_limit) {
         /* Page cache is thrashing while in direct reclaim (mostly happens on lowram devices) */
         kill_reason = DIRECT_RECL_AND_THRASHING;
@@ -2428,7 +2435,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     }
 
     /* Kill a process if necessary */
@@ -3215,7 +3222,7 @@ static void update_props() {
     per_app_memcg =
         property_get_bool("ro.config.per_app_memcg", low_ram_device);
     swap_free_low_percentage = clamp(0, 100, property_get_int32("ro.lmk.swap_free_low_percentage",
-        low_ram_device ? DEF_LOW_SWAP_LOWRAM : DEF_LOW_SWAP));
+        DEF_LOW_SWAP));
     psi_partial_stall_ms = property_get_int32("ro.lmk.psi_partial_stall_ms",
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = property_get_int32("ro.lmk.psi_complete_stall_ms",
