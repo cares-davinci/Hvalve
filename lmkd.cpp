@@ -2386,12 +2386,20 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         snprintf(kill_desc, sizeof(kill_desc), "device is low on swap (%" PRId64
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (swap_is_low && wmark < WMARK_HIGH) {
         /* Both free memory and swap are low */
         kill_reason = LOW_MEM_AND_SWAP;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap is low (%"
             PRId64 "kB < %" PRId64 "kB)", wmark > WMARK_LOW ? "min" : "low",
             mi.field.free_swap * page_k, swap_low_threshold * page_k);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (wmark < WMARK_HIGH && thrashing > thrashing_limit) {
         /* Page cache is thrashing while memory is low */
         kill_reason = LOW_MEM_AND_THRASHING;
