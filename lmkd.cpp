@@ -129,8 +129,7 @@
  * System property defaults
  */
 /* ro.lmk.swap_free_low_percentage property defaults */
-#define DEF_LOW_SWAP_LOWRAM 10
-#define DEF_LOW_SWAP 20
+#define DEF_LOW_SWAP 10
 /* ro.lmk.thrashing_limit property defaults */
 #define DEF_THRASHING_LOWRAM 30
 #define DEF_THRASHING 100
@@ -216,7 +215,6 @@ static android_log_context ctx;
 enum polling_update {
     POLLING_DO_NOT_CHANGE,
     POLLING_START,
-    POLLING_STOP,
     POLLING_PAUSE,
     POLLING_RESUME,
 };
@@ -2125,7 +2123,6 @@ static int find_and_kill_process(int min_score_adj, int kill_reason, const char 
 }
 
 static int64_t get_memory_usage(struct reread_data *file_data) {
-    int ret;
     int64_t mem_usage;
     char *buf;
 
@@ -2274,20 +2271,22 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     bool cut_thrashing_limit = false;
     int min_score_adj = 0;
 
-    /* Skip while still killing a process */
-    if (is_kill_pending()) {
-        goto no_kill;
-    }
-    /*
-     * Process is dead, stop waiting. This has no effect if pidfds are supported and
-     * death notification already caused waiting to stop.
-     */
-    stop_wait_for_proc_kill(true);
-
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
         return;
     }
+
+    bool kill_pending = is_kill_pending();
+    if (kill_pending && (kill_timeout_ms == 0 ||
+        get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms))) {
+        /* Skip while still killing a process */
+        goto no_kill;
+    }
+    /*
+     * Process is dead or kill timeout is over, stop waiting. This has no effect if pidfds are
+     * supported and death notification already caused waiting to stop.
+     */
+    stop_wait_for_proc_kill(!kill_pending);
 
     if (vmstat_parse(&vs) < 0) {
         ALOGE("Failed to parse vmstat!");
@@ -2387,12 +2386,20 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         snprintf(kill_desc, sizeof(kill_desc), "device is low on swap (%" PRId64
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (swap_is_low && wmark < WMARK_HIGH) {
         /* Both free memory and swap are low */
         kill_reason = LOW_MEM_AND_SWAP;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap is low (%"
             PRId64 "kB < %" PRId64 "kB)", wmark > WMARK_LOW ? "min" : "low",
             mi.field.free_swap * page_k, swap_low_threshold * page_k);
+        /* Do not kill perceptible apps unless below min watermark */
+        if (wmark < WMARK_LOW) {
+            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        }
     } else if (wmark < WMARK_HIGH && thrashing > thrashing_limit) {
         /* Page cache is thrashing while memory is low */
         kill_reason = LOW_MEM_AND_THRASHING;
@@ -2400,7 +2407,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", wmark > WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     } else if (reclaim == DIRECT_RECLAIM && thrashing > thrashing_limit) {
         /* Page cache is thrashing while in direct reclaim (mostly happens on lowram devices) */
         kill_reason = DIRECT_RECL_AND_THRASHING;
@@ -2408,7 +2415,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ;
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
     }
 
     /* Kill a process if necessary */
@@ -2456,7 +2463,6 @@ no_kill:
 }
 
 static void mp_event_common(int data, uint32_t events, struct polling_params *poll_params) {
-    int ret;
     unsigned long long evcount;
     int64_t mem_usage, memsw_usage;
     int64_t mem_pressure;
@@ -2511,7 +2517,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         return;
     }
 
-    if (kill_timeout_ms && get_time_diff_ms(&last_kill_tm, &curr_tm) < kill_timeout_ms) {
+    if (kill_timeout_ms &&
+        get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms)) {
         /*
          * If we're within the no-kill timeout, see if there's pending reclaim work
          * from the last killed process. If so, skip killing for now.
@@ -2986,13 +2993,25 @@ static int init(void) {
     return 0;
 }
 
+static bool polling_paused(struct polling_params *poll_params) {
+    return poll_params->paused_handler != NULL;
+}
+
+static void resume_polling(struct polling_params *poll_params, struct timespec curr_tm) {
+    poll_params->poll_start_tm = curr_tm;
+    poll_params->poll_handler = poll_params->paused_handler;
+}
+
 static void call_handler(struct event_handler_info* handler_info,
                          struct polling_params *poll_params, uint32_t events) {
     struct timespec curr_tm;
 
+    poll_params->update = POLLING_DO_NOT_CHANGE;
     handler_info->handler(handler_info->data, events, poll_params);
     clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
-    poll_params->last_poll_tm = curr_tm;
+    if (poll_params->poll_handler == handler_info) {
+        poll_params->last_poll_tm = curr_tm;
+    }
 
     switch (poll_params->update) {
     case POLLING_START:
@@ -3004,26 +3023,21 @@ static void call_handler(struct event_handler_info* handler_info,
         poll_params->poll_start_tm = curr_tm;
         poll_params->poll_handler = handler_info;
         break;
-    case POLLING_STOP:
-        poll_params->poll_handler = NULL;
-        break;
     case POLLING_PAUSE:
         poll_params->paused_handler = handler_info;
         poll_params->poll_handler = NULL;
         break;
     case POLLING_RESUME:
-        poll_params->poll_start_tm = curr_tm;
-        poll_params->poll_handler = poll_params->paused_handler;
+        resume_polling(poll_params, curr_tm);
         break;
     case POLLING_DO_NOT_CHANGE:
         if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
+            poll_params->paused_handler = NULL;
         }
-        /* WARNING: skipping the rest of the function */
-        return;
+        break;
     }
-    poll_params->update = POLLING_DO_NOT_CHANGE;
 }
 
 static void mainloop(void) {
@@ -3034,7 +3048,7 @@ static void mainloop(void) {
     long delay = -1;
 
     poll_params.poll_handler = NULL;
-    poll_params.update = POLLING_DO_NOT_CHANGE;
+    poll_params.paused_handler = NULL;
 
     while (1) {
         struct epoll_event events[MAX_EPOLL_EVENTS];
@@ -3071,8 +3085,23 @@ static void mainloop(void) {
                 call_handler(poll_params.poll_handler, &poll_params, 0);
             }
         } else {
-            /* Wait for events with no timeout */
-            nevents = epoll_wait(epollfd, events, maxevents, -1);
+            if (kill_timeout_ms && is_waiting_for_kill()) {
+                clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                delay = kill_timeout_ms - get_time_diff_ms(&last_kill_tm, &curr_tm);
+                /* Wait for pidfds notification or kill timeout to expire */
+                nevents = (delay > 0) ? epoll_wait(epollfd, events, maxevents, delay) : 0;
+                if (nevents == 0) {
+                    /* Kill notification timed out */
+                    stop_wait_for_proc_kill(false);
+                    if (polling_paused(&poll_params)) {
+                        clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                        resume_polling(&poll_params, curr_tm);
+                    }
+                }
+            } else {
+                /* Wait for events with no timeout */
+                nevents = epoll_wait(epollfd, events, maxevents, -1);
+            }
         }
 
         if (nevents == -1) {
@@ -3115,8 +3144,6 @@ static void mainloop(void) {
 }
 
 int issue_reinit() {
-    LMKD_CTRL_PACKET packet;
-    size_t size;
     int sock;
 
     sock = lmkd_connect();
@@ -3175,7 +3202,7 @@ static void update_props() {
     per_app_memcg =
         property_get_bool("ro.config.per_app_memcg", low_ram_device);
     swap_free_low_percentage = clamp(0, 100, property_get_int32("ro.lmk.swap_free_low_percentage",
-        low_ram_device ? DEF_LOW_SWAP_LOWRAM : DEF_LOW_SWAP));
+        DEF_LOW_SWAP));
     psi_partial_stall_ms = property_get_int32("ro.lmk.psi_partial_stall_ms",
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = property_get_int32("ro.lmk.psi_complete_stall_ms",
