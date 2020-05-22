@@ -587,6 +587,9 @@ static bool s_crit_event = false;
 /* PAGE_SIZE / 1024 */
 static long page_k;
 
+static void init_PreferredApps();
+static void update_perf_props();
+
 static void update_props();
 static bool init_monitors();
 static void destroy_monitors();
@@ -3809,6 +3812,98 @@ int issue_reinit() {
     return res == UPDATE_PROPS_SUCCESS ? 0 : -1;
 }
 
+static void init_PreferredApps() {
+    void *handle = NULL;
+    handle = dlopen(IOPD_LIB, RTLD_NOW);
+    if (handle != NULL) {
+        perf_ux_engine_trigger = (void (*)(int, char *))dlsym(handle, "perf_ux_engine_trigger");
+
+        if (!perf_ux_engine_trigger) {
+            ALOGE("Couldn't obtain perf_ux_engine_trigger");
+            enable_preferred_apps = false;
+        } else {
+            // Initialize preferred_apps
+            preferred_apps = (char *) malloc ( PREFERRED_OUT_LENGTH * sizeof(char));
+            if (preferred_apps == NULL) {
+                enable_preferred_apps = false;
+            } else {
+                memset(preferred_apps, 0, PREFERRED_OUT_LENGTH);
+                preferred_apps[0] = '\0';
+            }
+        }
+    }
+}
+
+static void update_perf_props() {
+
+    enable_watermark_check =
+        property_get_bool("ro.lmk.enable_watermark_check", false);
+    enable_preferred_apps =
+        property_get_bool("ro.lmk.enable_preferred_apps", false);
+
+     /* Loading the vendor library at runtime to access property value */
+     PropVal (*perf_get_prop)(const char *, const char *) = NULL;
+     void *handle = NULL;
+     handle = dlopen(PERFD_LIB, RTLD_NOW);
+     if (handle != NULL)
+         perf_get_prop = (PropVal (*)(const char *, const char *))dlsym(handle, "perf_get_prop");
+
+     if(!perf_get_prop) {
+          ALOGE("Couldn't get perf_get_prop function handle.");
+     } else {
+          char property[PROPERTY_VALUE_MAX];
+          char default_value[PROPERTY_VALUE_MAX];
+
+          /*Currently only the following properties introduced by Google
+          *are used outside. Hence their names are mirrored to _dup
+          *If it doesnot get value via get_prop it will use the value
+          *set by Google by default. To use the properties mentioned
+          *above, same can be followed*/
+          strlcpy(default_value, (kill_heaviest_task)? "true" : "false", PROPERTY_VALUE_MAX);
+          strlcpy(property, perf_get_prop("ro.lmk.kill_heaviest_task_dup", default_value).value, PROPERTY_VALUE_MAX);
+          kill_heaviest_task = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%lu", (kill_timeout_ms));
+          strlcpy(property, perf_get_prop("ro.lmk.kill_timeout_ms_dup", default_value).value, PROPERTY_VALUE_MAX);
+          kill_timeout_ms =  strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d",
+                    level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL]);
+          strlcpy(property, perf_get_prop("ro.lmk.super_critical", default_value).value, PROPERTY_VALUE_MAX);
+          level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
+          strlcpy(property, perf_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value, PROPERTY_VALUE_MAX);
+          direct_reclaim_pressure = strtod(property, NULL);
+
+          strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
+          strlcpy(property, perf_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
+          use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+          strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
+          strlcpy(property, perf_get_prop("ro.lmk.use_new_strategy_dup", default_value).value, PROPERTY_VALUE_MAX);
+          force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+          /*The following properties are not intoduced by Google
+           *hence kept as it is */
+          strlcpy(property, perf_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
+          enhance_batch_kill = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+          strlcpy(property, perf_get_prop("ro.lmk.enable_adaptive_lmk", "false").value, PROPERTY_VALUE_MAX);
+          enable_adaptive_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+          strlcpy(property, perf_get_prop("ro.lmk.enable_userspace_lmk", "false").value, PROPERTY_VALUE_MAX);
+          enable_userspace_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+          strlcpy(property, perf_get_prop("ro.lmk.enable_watermark_check", "false").value, PROPERTY_VALUE_MAX);
+          enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+          strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
+          enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+    }
+
+    /* Load IOP library for PApps */
+    if (enable_preferred_apps) {
+        init_PreferredApps();
+    }
+}
+
 static void update_props() {
     /* By default disable low level vmpressure events */
     level_oomadj[VMPRESS_LEVEL_LOW] =
@@ -3817,7 +3912,7 @@ static void update_props() {
         property_get_int32("ro.lmk.medium", 800);
     level_oomadj[VMPRESS_LEVEL_CRITICAL] =
         property_get_int32("ro.lmk.critical", 0);
-    /* This will gets updated through perf_wait_get_prop. */
+    /* This will gets updated through perf_get_prop. */
     level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = 606;
     debug_process_killing = property_get_bool("ro.lmk.debug", false);
 
@@ -3847,6 +3942,9 @@ static void update_props() {
         low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
     thrashing_limit_decay_pct = clamp(0, 100, property_get_int32("ro.lmk.thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
+
+    // Update Perf Properties
+    update_perf_props();
 }
 
 int main(int argc, char **argv) {
@@ -3858,91 +3956,6 @@ int main(int argc, char **argv) {
     }
 
     update_props();
-
-    enable_watermark_check =
-        property_get_bool("ro.lmk.enable_watermark_check", false);
-    enable_preferred_apps =
-        property_get_bool("ro.lmk.enable_preferred_apps", false);
-
-     /* Loading the vendor library at runtime to access property value */
-     PropVal (*perf_wait_get_prop)(const char *, const char *) = NULL;
-     void *handle = NULL;
-     handle = dlopen(PERFD_LIB, RTLD_NOW);
-     if (handle != NULL)
-         perf_wait_get_prop = (PropVal (*)(const char *, const char *))dlsym(handle, "perf_wait_get_prop");
-
-     if(!perf_wait_get_prop) {
-          ALOGE("Couldn't get perf_wait_get_prop function handle.");
-     } else {
-          char property[PROPERTY_VALUE_MAX];
-          char default_value[PROPERTY_VALUE_MAX];
-
-          /*Currently only the following properties introduced by Google
-          *are used outside. Hence their names are mirrored to _dup
-          *If it doesnot get value via get_prop it will use the value
-          *set by Google by default. To use the properties mentioned
-          *above, same can be followed*/
-          strlcpy(default_value, (kill_heaviest_task)? "true" : "false", PROPERTY_VALUE_MAX);
-          strlcpy(property, perf_wait_get_prop("ro.lmk.kill_heaviest_task_dup", default_value).value, PROPERTY_VALUE_MAX);
-          kill_heaviest_task = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%lu", (kill_timeout_ms));
-          strlcpy(property, perf_wait_get_prop("ro.lmk.kill_timeout_ms_dup", default_value).value, PROPERTY_VALUE_MAX);
-          kill_timeout_ms =  strtod(property, NULL);
-
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d",
-                    level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL]);
-          strlcpy(property, perf_wait_get_prop("ro.lmk.super_critical", default_value).value, PROPERTY_VALUE_MAX);
-          level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = strtod(property, NULL);
-
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
-          strlcpy(property, perf_wait_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value, PROPERTY_VALUE_MAX);
-          direct_reclaim_pressure = strtod(property, NULL);
-
-          strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
-          strlcpy(property, perf_wait_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
-          use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-
-	  strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
-	  strlcpy(property, perf_wait_get_prop("ro.lmk.use_new_strategy_dup", default_value).value, PROPERTY_VALUE_MAX);
-	  force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-
-          /*The following properties are not intoduced by Google
-           *hence kept as it is */
-          strlcpy(property, perf_wait_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
-          enhance_batch_kill = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_wait_get_prop("ro.lmk.enable_adaptive_lmk", "false").value, PROPERTY_VALUE_MAX);
-          enable_adaptive_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_wait_get_prop("ro.lmk.enable_userspace_lmk", "false").value, PROPERTY_VALUE_MAX);
-          enable_userspace_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_wait_get_prop("ro.lmk.enable_watermark_check", "false").value, PROPERTY_VALUE_MAX);
-          enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_wait_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
-          enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-    }
-
-    /* Load IOP library for PApps */
-    if (enable_preferred_apps) {
-        void *handle = NULL;
-        handle = dlopen(IOPD_LIB, RTLD_NOW);
-        if (handle != NULL) {
-            perf_ux_engine_trigger = (void (*)(int, char *))dlsym(handle, "perf_ux_engine_trigger");
-        }
-
-        if (!perf_ux_engine_trigger) {
-            ALOGE("Couldn't obtain perf_ux_engine_trigger");
-            enable_preferred_apps = false;
-        } else {
-            // Initialize preferred_apps
-            preferred_apps = (char *) malloc ( PREFERRED_OUT_LENGTH * sizeof(char));
-            if (preferred_apps == NULL) {
-                enable_preferred_apps = false;
-            } else {
-                memset(preferred_apps, 0, PREFERRED_OUT_LENGTH);
-                preferred_apps[0] = '\0';
-            }
-        }
-    }
 
     ctx = create_android_logger(KILLINFO_LOG_TAG);
 
