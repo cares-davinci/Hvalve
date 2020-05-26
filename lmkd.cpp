@@ -2775,6 +2775,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static bool in_reclaim;
     static struct zone_watermarks watermarks;
     static struct timespec wmark_update_tm;
+    static struct timespec last_pa_update_tm;
 
     union meminfo mi;
     union vmstat vs;
@@ -2793,6 +2794,14 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
         return;
+    }
+
+    if (level == VMPRESS_LEVEL_LOW) {
+        if (enable_preferred_apps &&
+                (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >= pa_update_timeout_ms)) {
+            perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
+            last_pa_update_tm = curr_tm;
+        }
     }
 
     bool kill_pending = is_kill_pending();
@@ -2844,6 +2853,12 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         reclaim = KSWAPD_RECLAIM;
     } else {
         in_reclaim = false;
+
+        if (enable_preferred_apps &&
+                (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >= pa_update_timeout_ms)) {
+            perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
+            last_pa_update_tm = curr_tm;
+        }
         /* Skip if system is not reclaiming */
         goto no_kill;
     }
