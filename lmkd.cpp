@@ -207,6 +207,7 @@ static bool kill_heaviest_task;
 static unsigned long kill_timeout_ms;
 static int direct_reclaim_pressure = 45;
 static bool use_minfree_levels;
+static bool force_use_old_strategy;
 static bool per_app_memcg;
 static bool enhance_batch_kill;
 static bool enable_adaptive_lmk;
@@ -3349,6 +3350,8 @@ static bool init_psi_monitors() {
      */
     bool use_new_strategy =
         property_get_bool("ro.lmk.use_new_strategy", low_ram_device || !use_minfree_levels);
+    if (force_use_old_strategy)
+	    use_new_strategy = false;
 
     /* In default PSI mode override stall amounts using system properties */
     if (use_new_strategy) {
@@ -3858,6 +3861,10 @@ int main(int argc, char **argv) {
           strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
           strlcpy(property, perf_wait_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
           use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+	  strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
+	  strlcpy(property, perf_wait_get_prop("ro.lmk.force_use_old_strategy", default_value).value, PROPERTY_VALUE_MAX);
+	  force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
           /*The following properties are not intoduced by Google
            *hence kept as it is */
