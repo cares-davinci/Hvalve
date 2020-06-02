@@ -2397,7 +2397,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
         /* Do not kill perceptible apps unless below min watermark */
-        if (wmark < WMARK_LOW) {
+        if (wmark > WMARK_MIN) {
             min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
         }
     } else if (swap_is_low && wmark < WMARK_HIGH) {
@@ -2407,7 +2407,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "kB < %" PRId64 "kB)", wmark > WMARK_LOW ? "min" : "low",
             mi.field.free_swap * page_k, swap_low_threshold * page_k);
         /* Do not kill perceptible apps unless below min watermark */
-        if (wmark < WMARK_LOW) {
+        if (wmark > WMARK_MIN) {
             min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
         }
     } else if (wmark < WMARK_HIGH && swap_util_max < 100 &&
