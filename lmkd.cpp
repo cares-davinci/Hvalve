@@ -3904,7 +3904,7 @@ int main(int argc, char **argv) {
           use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
 	  strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
-	  strlcpy(property, perf_wait_get_prop("ro.lmk.force_use_old_strategy", default_value).value, PROPERTY_VALUE_MAX);
+	  strlcpy(property, perf_wait_get_prop("ro.lmk.use_new_strategy_dup", default_value).value, PROPERTY_VALUE_MAX);
 	  force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
           /*The following properties are not intoduced by Google
