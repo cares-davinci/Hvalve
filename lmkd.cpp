@@ -1819,8 +1819,44 @@ static int vmstat_parse(union vmstat *vs) {
     return 0;
 }
 
+enum wakeup_reason {
+    Event,
+    Polling
+};
+
+struct wakeup_info {
+    struct timespec wakeup_tm;
+    struct timespec prev_wakeup_tm;
+    struct timespec last_event_tm;
+    int wakeups_since_event;
+    int skipped_wakeups;
+};
+
+/*
+ * After the initial memory pressure event is received lmkd schedules periodic wakeups to check
+ * the memory conditions and kill if needed (polling). This is done because pressure events are
+ * rate-limited and memory conditions can change in between events. Therefore after the initial
+ * event there might be multiple wakeups. This function records the wakeup information such as the
+ * timestamps of the last event and the last wakeup, the number of wakeups since the last event
+ * and how many of those wakeups were skipped (some wakeups are skipped if previously killed
+ * process is still freeing its memory).
+ */
+static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason,
+                               struct wakeup_info *wi) {
+    wi->prev_wakeup_tm = wi->wakeup_tm;
+    wi->wakeup_tm = *tm;
+    if (reason == Event) {
+        wi->last_event_tm = *tm;
+        wi->wakeups_since_event = 0;
+        wi->skipped_wakeups = 0;
+    } else {
+        wi->wakeups_since_event++;
+    }
+}
+
 static void killinfo_log(struct proc* procp, int min_oom_score, int tasksize,
-                         int kill_reason, union meminfo *mi) {
+                         int kill_reason, union meminfo *mi,
+                         struct wakeup_info *wi, struct timespec *tm) {
     /* log process information */
     android_log_write_int32(ctx, procp->pid);
     android_log_write_int32(ctx, procp->uid);
@@ -1833,6 +1869,12 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int tasksize,
     for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
         android_log_write_int32(ctx, (int32_t)min(mi->arr[field_idx] * page_k, INT32_MAX));
     }
+
+    /* log lmkd wakeup information */
+    android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->last_event_tm, tm));
+    android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
+    android_log_write_int32(ctx, wi->wakeups_since_event);
+    android_log_write_int32(ctx, wi->skipped_wakeups);
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
@@ -2000,7 +2042,8 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
 
 /* Kill one process specified by procp.  Returns the size of the process killed */
 static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reason,
-                            const char *kill_desc, union meminfo *mi, struct timespec *tm) {
+                            const char *kill_desc, union meminfo *mi, struct wakeup_info *wi,
+                            struct timespec *tm) {
     int pid = procp->pid;
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
@@ -2056,7 +2099,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reas
 
     inc_killcnt(procp->oomadj);
 
-    killinfo_log(procp, min_oom_score, tasksize, kill_reason, mi);
+    killinfo_log(procp, min_oom_score, tasksize, kill_reason, mi, wi, tm);
 
     if (kill_desc) {
         ALOGI("Kill '%s' (%d), uid %d, oom_adj %d to free %ldkB; reason: %s", taskname, pid,
@@ -2086,7 +2129,7 @@ out:
  * Returns size of the killed process.
  */
 static int find_and_kill_process(int min_score_adj, int kill_reason, const char *kill_desc,
-                                 union meminfo *mi, struct timespec *tm) {
+                                 union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
@@ -2101,7 +2144,8 @@ static int find_and_kill_process(int min_score_adj, int kill_reason, const char 
             if (!procp)
                 break;
 
-            killed_size = kill_one_process(procp, min_score_adj, kill_reason, kill_desc, mi, tm);
+            killed_size = kill_one_process(procp, min_score_adj, kill_reason, kill_desc,
+                                           mi, wi, tm);
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
@@ -2265,6 +2309,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static bool in_reclaim;
     static struct zone_watermarks watermarks;
     static struct timespec wmark_update_tm;
+    static struct wakeup_info wi;
 
     union meminfo mi;
     union vmstat vs;
@@ -2286,10 +2331,13 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         return;
     }
 
+    record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
+
     bool kill_pending = is_kill_pending();
     if (kill_pending && (kill_timeout_ms == 0 ||
         get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms))) {
         /* Skip while still killing a process */
+        wi.skipped_wakeups++;
         goto no_kill;
     }
     /*
@@ -2441,7 +2489,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     /* Kill a process if necessary */
     if (kill_reason != NONE) {
         int pages_freed = find_and_kill_process(min_score_adj, kill_reason, kill_desc, &mi,
-                                                &curr_tm);
+                                                &wi, &curr_tm);
         if (pages_freed > 0) {
             killing = true;
             if (cut_thrashing_limit) {
@@ -2502,6 +2550,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         .filename = MEMCG_MEMORYSW_USAGE,
         .fd = -1,
     };
+    static struct wakeup_info wi;
 
     if (debug_process_killing) {
         ALOGI("%s memory pressure event is triggered", level_name[level]);
@@ -2537,6 +2586,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         return;
     }
 
+    record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
+
     if (kill_timeout_ms &&
         get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms)) {
         /*
@@ -2545,6 +2596,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
          */
         if (is_kill_pending()) {
             kill_skip_count++;
+            wi.skipped_wakeups++;
             return;
         }
         /*
@@ -2656,7 +2708,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], -1, NULL, &mi, &curr_tm) == 0) {
+        if (find_and_kill_process(level_oomadj[level], -1, NULL, &mi, &wi, &curr_tm) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -2679,7 +2731,7 @@ do_kill:
             min_score_adj = level_oomadj[level];
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, -1, NULL, &mi, &curr_tm);
+        pages_freed = find_and_kill_process(min_score_adj, -1, NULL, &mi, &wi, &curr_tm);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
