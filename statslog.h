@@ -59,17 +59,21 @@ stats_write_lmk_state_changed(int32_t state);
 int
 stats_write_lmk_kill_occurred(int32_t uid, char const* process_name,
                               int32_t oom_score, int32_t min_oom_score,
-                              int tasksize, struct memory_stat *mem_st);
+                              struct memory_stat *mem_st);
 
 /**
  * Logs the event when LMKD kills a process to reduce memory pressure.
  * Code: LMK_KILL_OCCURRED = 51
  */
 int stats_write_lmk_kill_occurred_pid(int32_t uid, int pid, int32_t oom_score,
-                                      int32_t min_oom_score, int tasksize,
+                                      int32_t min_oom_score,
                                       struct memory_stat* mem_st);
 
-struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid);
+/**
+ * Reads memory stats used to log the statsd atom. Returns non-null ptr on success.
+ */
+struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
+                                           int64_t rss_bytes, int64_t swap_bytes);
 
 /**
  * Registers a process taskname by pid, while it is still alive.
@@ -94,19 +98,21 @@ stats_write_lmk_state_changed(int32_t state __unused) { return -EINVAL; }
 static inline int
 stats_write_lmk_kill_occurred(int32_t uid __unused,
                               char const* process_name __unused, int32_t oom_score __unused,
-                              int32_t min_oom_score __unused, int tasksize __unused,
+                              int32_t min_oom_score __unused,
                               struct memory_stat *mem_st __unused) { return -EINVAL; }
 
 static inline int stats_write_lmk_kill_occurred_pid(int32_t uid __unused,
                                                     int pid __unused, int32_t oom_score __unused,
                                                     int32_t min_oom_score __unused,
-                                                    int tasksize __unused,
                                                     struct memory_stat* mem_st __unused) {
     return -EINVAL;
 }
 
 static inline struct memory_stat *stats_read_memory_stat(bool per_app_memcg __unused,
-                                    int pid __unused, uid_t uid __unused) { return NULL; }
+                                    int pid __unused, uid_t uid __unused,
+                                    int64_t rss_bytes __unused, int64_t swap_bytes __unused) {
+    return NULL;
+}
 
 static inline void stats_store_taskname(int pid __unused, const char* taskname __unused) {}
 
