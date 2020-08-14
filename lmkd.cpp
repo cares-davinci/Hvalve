@@ -3629,6 +3629,7 @@ static bool init_monitors() {
 
 static void destroy_monitors() {
     if (use_psi_monitors) {
+        destroy_mp_psi(VMPRESS_LEVEL_SUPER_CRITICAL);
         destroy_mp_psi(VMPRESS_LEVEL_CRITICAL);
         destroy_mp_psi(VMPRESS_LEVEL_MEDIUM);
         destroy_mp_psi(VMPRESS_LEVEL_LOW);
