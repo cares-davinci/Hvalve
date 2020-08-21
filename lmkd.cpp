@@ -2239,11 +2239,9 @@ struct zone_watermarks {
  * Returns lowest breached watermark or WMARK_NONE.
  */
 static enum zone_watermark get_lowest_watermark(union meminfo *mi,
-                                                struct zone_watermarks *watermarks,
-                                                long margin)
+                                                struct zone_watermarks *watermarks)
 {
     int64_t nr_free_pages = mi->field.nr_free_pages - mi->field.cma_free;
-    int64_t high_wmark = (watermarks->high_wmark * margin) / 100;
 
     if (nr_free_pages < watermarks->min_wmark) {
         return WMARK_MIN;
@@ -2251,7 +2249,7 @@ static enum zone_watermark get_lowest_watermark(union meminfo *mi,
     if (nr_free_pages < watermarks->low_wmark) {
         return WMARK_LOW;
     }
-    if (nr_free_pages < high_wmark) {
+    if (nr_free_pages < watermarks->high_wmark) {
         return WMARK_HIGH;
     }
     return WMARK_NONE;
@@ -2408,7 +2406,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
      }
 
     /* Find out which watermark is breached if any */
-    wmark = get_lowest_watermark(&mi, &watermarks, swap_is_low ? 115 : 100);
+    wmark = get_lowest_watermark(&mi, &watermarks);
 
     /*
      * TODO: move this logic into a separate function
