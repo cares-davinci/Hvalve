@@ -3120,6 +3120,8 @@ static bool polling_paused(struct polling_params *poll_params) {
 static void resume_polling(struct polling_params *poll_params, struct timespec curr_tm) {
     poll_params->poll_start_tm = curr_tm;
     poll_params->poll_handler = poll_params->paused_handler;
+    poll_params->polling_interval_ms = PSI_POLL_PERIOD_SHORT_MS;
+    poll_params->paused_handler = NULL;
 }
 
 static void call_handler(struct event_handler_info* handler_info,
@@ -3154,7 +3156,6 @@ static void call_handler(struct event_handler_info* handler_info,
         if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
-            poll_params->paused_handler = NULL;
         }
         break;
     }
@@ -3179,12 +3180,8 @@ static void mainloop(void) {
             bool poll_now;
 
             clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
-            if (poll_params.poll_handler == poll_params.paused_handler) {
-                /*
-                 * Just transitioned into POLLING_RESUME. Reset paused_handler
-                 * and poll immediately
-                 */
-                poll_params.paused_handler = NULL;
+            if (poll_params.update == POLLING_RESUME) {
+                /* Just transitioned into POLLING_RESUME, poll immediately. */
                 poll_now = true;
                 nevents = 0;
             } else {
@@ -3215,6 +3212,7 @@ static void mainloop(void) {
                     stop_wait_for_proc_kill(false);
                     if (polling_paused(&poll_params)) {
                         clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                        poll_params.update = POLLING_RESUME;
                         resume_polling(&poll_params, curr_tm);
                     }
                 }
