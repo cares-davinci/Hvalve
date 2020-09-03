@@ -2422,7 +2422,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     if (since_thrashing_reset_ms > THRASHING_RESET_INTERVAL_MS) {
         long windows_passed;
         /* Calculate prev_thrash_growth if we crossed THRASHING_RESET_INTERVAL_MS */
-        prev_thrash_growth = (vs.field.workingset_refault - init_ws_refault) * 100 / base_file_lru;
+        prev_thrash_growth = (vs.field.workingset_refault - init_ws_refault) * 100
+                            / (base_file_lru + 1);
         windows_passed = (since_thrashing_reset_ms / THRASHING_RESET_INTERVAL_MS);
         /*
          * Decay prev_thrashing unless over-the-limit thrashing was registered in the window we
@@ -2440,7 +2441,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         thrashing_limit = thrashing_limit_pct;
     } else {
         /* Calculate what % of the file-backed pagecache refaulted so far */
-        thrashing = (vs.field.workingset_refault - init_ws_refault) * 100 / base_file_lru;
+        thrashing = (vs.field.workingset_refault - init_ws_refault) * 100 / (base_file_lru + 1);
     }
     /* Add previous cycle's decayed thrashing amount */
     thrashing += prev_thrash_growth;
