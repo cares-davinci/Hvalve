@@ -92,6 +92,7 @@
 #define MAX_NR_ZONES 6
 
 #define PERCEPTIBLE_APP_ADJ 200
+#define VISIBLE_APP_ADJ 100
 
 /* Android Logger event logtags (see event.logtags) */
 #define KILLINFO_LOG_TAG 10195355
@@ -143,7 +144,7 @@
 #define DEF_LOW_SWAP 10
 /* ro.lmk.thrashing_limit property defaults */
 #define DEF_THRASHING_LOWRAM 30
-#define DEF_THRASHING 100
+#define DEF_THRASHING 30
 /* ro.lmk.thrashing_limit_decay property defaults */
 #define DEF_THRASHING_DECAY_LOWRAM 50
 #define DEF_THRASHING_DECAY 10
@@ -151,7 +152,7 @@
 #define DEF_PARTIAL_STALL_LOWRAM 200
 #define DEF_PARTIAL_STALL 70
 /* ro.lmk.psi_complete_stall_ms property defaults */
-#define DEF_COMPLETE_STALL 700
+#define DEF_COMPLETE_STALL 70
 
 #define LMKD_REINIT_PROP "lmkd.reinit"
 
@@ -489,6 +490,7 @@ enum vmstat_field {
     VS_PGSKIP_HIGH,
     VS_PGSKIP_MOVABLE,
     VS_PGSKIP_LAST_ZONE = VS_PGSKIP_MOVABLE,
+    VS_COMPACT_STALL,
     VS_FIELD_COUNT
 };
 
@@ -506,6 +508,7 @@ static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "pgskip_normal",
     "pgskip_high",
     "pgskip_movable",
+    "compact_stall",
 };
 
 union vmstat {
@@ -521,6 +524,7 @@ union vmstat {
         int64_t pgskip_normal;
         int64_t pgskip_high;
         int64_t pgskip_movable;
+        int64_t compact_stall;
     } field;
     int64_t arr[VS_FIELD_COUNT];
 };
@@ -2849,11 +2853,12 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     enum kill_reasons {
         NONE = -1, /* To denote no kill condition */
         PRESSURE_AFTER_KILL = 0,
-        NOT_RESPONDING,
+        CRITICAL_KILL,
         LOW_SWAP_AND_THRASHING,
         LOW_MEM_AND_SWAP,
         LOW_MEM_AND_THRASHING,
         DIRECT_RECL_AND_THRASHING,
+        COMPACTION,
         KILL_REASON_COUNT
     };
     enum reclaim_state {
@@ -2873,6 +2878,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static struct zone_watermarks watermarks;
     static struct timespec wmark_update_tm;
     static struct timespec last_pa_update_tm;
+    static int64_t init_compact_stall;
 
     union meminfo mi;
     union vmstat vs;
@@ -2888,6 +2894,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     bool cut_thrashing_limit = false;
     unsigned int i;
     int min_score_adj = 0;
+    bool in_compaction = false;
 
     ULMK_LOG(D, "%s pressure event %s", level_name[level], events ?
              "triggered" : "polling check");
@@ -2962,6 +2969,11 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         swap_is_low = mi.field.free_swap < swap_low_threshold;
     }
 
+    if (vs.field.compact_stall > init_compact_stall) {
+        init_compact_stall = vs.field.compact_stall;
+        in_compaction = true;
+    }
+
     /* Identify reclaim state */
     if (vs.field.pgscan_direct > init_pgscan_direct) {
         init_pgscan_direct = vs.field.pgscan_direct;
@@ -2984,11 +2996,15 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
             last_pa_update_tm = curr_tm;
         }
-        /* Skip if system is not reclaiming */
-        ULMK_LOG(D, "Ignoring %s pressure event; system is not in reclaim",
-                 level_name[level]);
-        goto no_kill;
+
+        if (!in_compaction) {
+            /* Skip if system is not reclaiming */
+            ULMK_LOG(D, "Ignoring %s pressure event; system is not in reclaim",
+                     level_name[level]);
+            goto no_kill;
+        }
     }
+
 
     if (!in_reclaim) {
         /* Record file-backed pagecache size when entering reclaim cycle */
@@ -3028,7 +3044,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
      * TODO: move this logic into a separate function
      * Decide if killing a process is necessary and record the reason
      */
-    if (cycle_after_kill && wmark < WMARK_LOW) {
+    if (cycle_after_kill && wmark <= WMARK_LOW) {
         /*
          * Prevent kills not freeing enough memory which might lead to OOM kill.
          * This might happen when a process is consuming memory faster than reclaim can
@@ -3036,14 +3052,17 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = PRESSURE_AFTER_KILL;
         strncpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
-    } else if (level == VMPRESS_LEVEL_CRITICAL && events != 0) {
+    } else if (level >= VMPRESS_LEVEL_CRITICAL && (events != 0 || wmark <= WMARK_HIGH)) {
         /*
          * Device is too busy reclaiming memory which might lead to ANR.
          * Critical level is triggered when PSI complete stall (all tasks are blocked because
          * of the memory congestion) breaches the configured threshold.
          */
-        kill_reason = NOT_RESPONDING;
-        strncpy(kill_desc, "device is not responding", sizeof(kill_desc));
+        kill_reason = CRITICAL_KILL;
+        strncpy(kill_desc, "critical pressure and device is low on memory", sizeof(kill_desc));
+        if (wmark > WMARK_MIN) {
+            min_score_adj = VISIBLE_APP_ADJ;
+        }
     } else if (swap_is_low && thrashing > thrashing_limit_pct) {
         /* Page cache is thrashing while swap is low */
         kill_reason = LOW_SWAP_AND_THRASHING;
@@ -3051,10 +3070,10 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
         /* Do not kill perceptible apps unless below min watermark */
-        if (wmark > WMARK_MIN) {
+        if (wmark > WMARK_MIN && level == VMPRESS_LEVEL_MEDIUM) {
             min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
         }
-    } else if (swap_is_low && wmark < WMARK_HIGH) {
+    } else if (swap_is_low && wmark <= WMARK_HIGH) {
         /* Both free memory and swap are low */
         kill_reason = LOW_MEM_AND_SWAP;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap is low (%"
@@ -3064,14 +3083,13 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         if (wmark > WMARK_MIN) {
             min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
         }
-    } else if (wmark < WMARK_HIGH && thrashing > thrashing_limit) {
+    } else if (wmark <= WMARK_HIGH && thrashing > thrashing_limit) {
         /* Page cache is thrashing while memory is low */
         kill_reason = LOW_MEM_AND_THRASHING;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and thrashing (%"
             PRId64 "%%)", wmark < WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
-        /* Do not kill perceptible apps because of thrashing */
-        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+        min_score_adj = VISIBLE_APP_ADJ;
     } else if (reclaim == DIRECT_RECLAIM && thrashing > thrashing_limit) {
         /* Page cache is thrashing while in direct reclaim (mostly happens on lowram devices) */
         kill_reason = DIRECT_RECL_AND_THRASHING;
@@ -3080,6 +3098,10 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
         min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+    } else if (in_compaction && wmark <= WMARK_HIGH) {
+        kill_reason = COMPACTION;
+        strncpy(kill_desc, "device is in compaction and low on memory", sizeof(kill_desc));
+        min_score_adj = VISIBLE_APP_ADJ;
     }
 
     /* Kill a process if necessary */
