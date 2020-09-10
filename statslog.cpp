@@ -69,41 +69,61 @@ static struct proc* pid_lookup(int pid) {
     return procp;
 }
 
+inline int32_t map_kill_reason(enum kill_reasons reason) {
+    switch (reason) {
+        case PRESSURE_AFTER_KILL:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__PRESSURE_AFTER_KILL;
+        case NOT_RESPONDING:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__NOT_RESPONDING;
+        case LOW_SWAP_AND_THRASHING:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_SWAP_AND_THRASHING;
+        case LOW_MEM_AND_SWAP:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_SWAP;
+        case LOW_MEM_AND_THRASHING:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_THRASHING;
+        case DIRECT_RECL_AND_THRASHING:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__DIRECT_RECL_AND_THRASHING;
+        case LOW_MEM_AND_SWAP_UTIL:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_SWAP_UTIL;
+        default:
+            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__UNKNOWN;
+    }
+}
+
 /**
  * Logs the event when LMKD kills a process to reduce memory pressure.
  * Code: LMK_KILL_OCCURRED = 51
  */
-int
-stats_write_lmk_kill_occurred(int32_t uid, char const* process_name,
-                              int32_t oom_score, int32_t min_oom_score, int tasksize,
-                              struct memory_stat *mem_st) {
+int stats_write_lmk_kill_occurred(struct kill_stat *kill_st, struct memory_stat *mem_st) {
     if (enable_stats_log) {
         return android::lmkd::stats::stats_write(
                 android::lmkd::stats::LMK_KILL_OCCURRED,
-                uid,
-                process_name,
-                oom_score,
+                kill_st->uid,
+                kill_st->taskname,
+                kill_st->oom_score,
                 mem_st ? mem_st->pgfault : -1,
                 mem_st ? mem_st->pgmajfault : -1,
-                mem_st ? mem_st->rss_in_bytes : tasksize * BYTES_IN_KILOBYTE,
+                mem_st ? mem_st->rss_in_bytes : kill_st->tasksize * BYTES_IN_KILOBYTE,
                 mem_st ? mem_st->cache_in_bytes : -1,
                 mem_st ? mem_st->swap_in_bytes : -1,
                 mem_st ? mem_st->process_start_time_ns : -1,
-                min_oom_score
+                kill_st->min_oom_score,
+                kill_st->free_mem_kb,
+                kill_st->free_swap_kb,
+                map_kill_reason(kill_st->kill_reason)
         );
     } else {
         return -EINVAL;
     }
 }
 
-int stats_write_lmk_kill_occurred_pid(int32_t uid, int pid, int32_t oom_score,
-                                      int32_t min_oom_score, int tasksize,
+int stats_write_lmk_kill_occurred_pid(int pid, struct kill_stat *kill_st,
                                       struct memory_stat* mem_st) {
     struct proc* proc = pid_lookup(pid);
     if (!proc) return -EINVAL;
 
-    return stats_write_lmk_kill_occurred(uid, proc->taskname, oom_score, min_oom_score,
-                                         tasksize, mem_st);
+    kill_st->taskname = proc->taskname;
+    return stats_write_lmk_kill_occurred(kill_st, mem_st);
 }
 
 static void memory_stat_parse_line(char* line, struct memory_stat* mem_st) {
