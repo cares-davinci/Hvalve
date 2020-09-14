@@ -2168,7 +2168,8 @@ out:
      */
     if (s_crit_event_upgraded)
 	    s_crit_event_upgraded = s_crit_event = false;
-    ULMK_LOG(E, "adj:%d file_cache: %d\n", min_score_adj, nr_file);
+    if (debug_process_killing)
+        ULMK_LOG(E, "adj:%d file_cache: %d\n", min_score_adj, nr_file);
     return min_score_adj;
 }
 
@@ -2231,12 +2232,15 @@ static int zone_watermarks_ok(enum vmpressure_level level)
     for (zone_id = 0; zone_id < present_zones; zone_id++) {
         int margin;
 
-        ULMK_LOG(D, "Zone %s: free:%d high:%d cma:%d reserve:(%d %d %d) anon:(%d %d) file:(%d %d)\n",
+        if (debug_process_killing) {
+            ULMK_LOG(D, "Zone %s: free:%d high:%d cma:%d reserve:(%d %d %d)"
+                " anon:(%d %d) file:(%d %d)\n",
                 w[zone_id].name, w[zone_id].free, w[zone_id].high, w[zone_id].cma,
                 w[zone_id].lowmem_reserve[0], w[zone_id].lowmem_reserve[1],
                 w[zone_id].lowmem_reserve[2],
                 w[zone_id].inactive_anon, w[zone_id].active_anon,
                 w[zone_id].inactive_file, w[zone_id].active_file);
+        }
 
         /* Zone is empty */
         if (!w[zone_id].present)
@@ -2772,7 +2776,8 @@ static void log_zone_watermarks(struct zoneinfo *zi,
         for (j = 0; j < node->zone_count; j++) {
             zone_fields = &node->zones[j].fields;
 
-            ULMK_LOG(D, "Zone: %d nr_free_pages: %" PRId64 " min: %" PRId64
+            if (debug_process_killing) {
+                ULMK_LOG(D, "Zone: %d nr_free_pages: %" PRId64 " min: %" PRId64
                      " low: %" PRId64 " high: %" PRId64 " present: %" PRId64
                      " nr_cma_free: %" PRId64 " max_protection: %" PRId64,
                      j, zone_fields->field.nr_free_pages,
@@ -2780,11 +2785,14 @@ static void log_zone_watermarks(struct zoneinfo *zi,
                      zone_fields->field.high, zone_fields->field.present,
                      zone_fields->field.nr_free_cma,
                      node->zones[j].max_protection);
+            }
         }
     }
 
-    ULMK_LOG(D, "Aggregate wmarks: min: %ld low: %ld high: %ld",
+    if (debug_process_killing) {
+        ULMK_LOG(D, "Aggregate wmarks: min: %ld low: %ld high: %ld",
              wmarks->min_wmark, wmarks->low_wmark, wmarks->high_wmark);
+    }
 }
 
 void calc_zone_watermarks(struct zoneinfo *zi, struct zone_watermarks *watermarks) {
@@ -2822,11 +2830,13 @@ static void log_meminfo(union meminfo *mi, enum zone_watermark wmark)
         strlcpy(wmark_str, "none", LINE_MAX);
     }
 
-    ULMK_LOG(D, "smallest wmark breached: %s nr_free_pages: %" PRId64
+    if (debug_process_killing) {
+        ULMK_LOG(D, "smallest wmark breached: %s nr_free_pages: %" PRId64
              " active_anon: %" PRId64 " inactive_anon: %" PRId64
              " cma_free: %" PRId64, wmark_str, mi->field.nr_free_pages,
              mi->field.active_anon, mi->field.inactive_anon,
              mi->field.cma_free);
+    }
 }
 
 static void log_pgskip_stats(union vmstat *vs, int64_t *init_pgskip)
@@ -2841,12 +2851,14 @@ static void log_pgskip_stats(union vmstat *vs, int64_t *init_pgskip)
         }
     }
 
-    ULMK_LOG(D, "pgskip deltas: DMA: %" PRId64 " Normal: %" PRId64 " High: %"
+    if (debug_process_killing) {
+        ULMK_LOG(D, "pgskip deltas: DMA: %" PRId64 " Normal: %" PRId64 " High: %"
              PRId64 " Movable: %" PRId64,
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_DMA)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_NORMAL)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_HIGH)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_MOVABLE)]);
+    }
 }
 
 static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_params) {
@@ -2945,7 +2957,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         init_ws_refault = vs.field.workingset_refault;
     }
 
-    ULMK_LOG(D, "nr_free_pages: %" PRId64 " nr_inactive_file: %" PRId64
+    if (debug_process_killing) {
+        ULMK_LOG(D, "nr_free_pages: %" PRId64 " nr_inactive_file: %" PRId64
              " nr_active_file: %" PRId64  " workingset_refault: %" PRId64
              " pgscan_kswapd: %" PRId64 " pgscan_direct: %" PRId64
              " pgscan_direct_throttle: %" PRId64 " init_pgscan_direct: %" PRId64
@@ -2959,6 +2972,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
              init_pgscan_kswapd, base_file_lru, init_ws_refault,
              mi.field.free_swap, mi.field.total_swap,
              (mi.field.free_swap * 100) / (mi.field.total_swap + 1));
+    }
     log_pgskip_stats(&vs, init_pgskip);
 
     /* Check free swap levels */
