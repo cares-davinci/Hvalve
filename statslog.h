@@ -37,6 +37,31 @@ struct memory_stat {
     int64_t process_start_time_ns;
 };
 
+// If you update this, also update the corresponding stats enum mapping.
+enum kill_reasons {
+    NONE = -1, /* To denote no kill condition */
+    PRESSURE_AFTER_KILL = 0,
+    NOT_RESPONDING,
+    CRITICAL_KILL=NOT_RESPONDING,
+    LOW_SWAP_AND_THRASHING,
+    LOW_MEM_AND_SWAP,
+    LOW_MEM_AND_THRASHING,
+    DIRECT_RECL_AND_THRASHING,
+    LOW_MEM_AND_SWAP_UTIL,
+    COMPACTION,
+    KILL_REASON_COUNT
+};
+
+struct kill_stat {
+    int32_t uid;
+    char *taskname;
+    enum kill_reasons kill_reason;
+    int32_t oom_score;
+    int32_t min_oom_score;
+    int64_t free_mem_kb;
+    int64_t free_swap_kb;
+};
+
 #ifdef LMKD_LOG_STATS
 
 #define MEMCG_PROCESS_MEMORY_STAT_PATH "/dev/memcg/apps/uid_%u/pid_%d/memory.stat"
@@ -56,20 +81,20 @@ stats_write_lmk_state_changed(int32_t state);
  * Logs the event when LMKD kills a process to reduce memory pressure.
  * Code: LMK_KILL_OCCURRED = 51
  */
-int
-stats_write_lmk_kill_occurred(int32_t uid, char const* process_name,
-                              int32_t oom_score, int32_t min_oom_score,
-                              int tasksize, struct memory_stat *mem_st);
+int stats_write_lmk_kill_occurred(struct kill_stat *kill_st, struct memory_stat *mem_st);
 
 /**
  * Logs the event when LMKD kills a process to reduce memory pressure.
  * Code: LMK_KILL_OCCURRED = 51
  */
-int stats_write_lmk_kill_occurred_pid(int32_t uid, int pid, int32_t oom_score,
-                                      int32_t min_oom_score, int tasksize,
+int stats_write_lmk_kill_occurred_pid(int pid, struct kill_stat *kill_st,
                                       struct memory_stat* mem_st);
 
-struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid);
+/**
+ * Reads memory stats used to log the statsd atom. Returns non-null ptr on success.
+ */
+struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
+                                           int64_t rss_bytes, int64_t swap_bytes);
 
 /**
  * Registers a process taskname by pid, while it is still alive.
@@ -92,21 +117,21 @@ static inline int
 stats_write_lmk_state_changed(int32_t state __unused) { return -EINVAL; }
 
 static inline int
-stats_write_lmk_kill_occurred(int32_t uid __unused,
-                              char const* process_name __unused, int32_t oom_score __unused,
-                              int32_t min_oom_score __unused, int tasksize __unused,
-                              struct memory_stat *mem_st __unused) { return -EINVAL; }
+stats_write_lmk_kill_occurred(struct kill_stat *kill_st __unused,
+                              struct memory_stat *mem_st __unused) {
+    return -EINVAL;
+}
 
-static inline int stats_write_lmk_kill_occurred_pid(int32_t uid __unused,
-                                                    int pid __unused, int32_t oom_score __unused,
-                                                    int32_t min_oom_score __unused,
-                                                    int tasksize __unused,
-                                                    struct memory_stat* mem_st __unused) {
+int stats_write_lmk_kill_occurred_pid(int pid __unused, struct kill_stat *kill_st __unused,
+                                      struct memory_stat* mem_st __unused) {
     return -EINVAL;
 }
 
 static inline struct memory_stat *stats_read_memory_stat(bool per_app_memcg __unused,
-                                    int pid __unused, uid_t uid __unused) { return NULL; }
+                                    int pid __unused, uid_t uid __unused,
+                                    int64_t rss_bytes __unused, int64_t swap_bytes __unused) {
+    return NULL;
+}
 
 static inline void stats_store_taskname(int pid __unused, const char* taskname __unused) {}
 
