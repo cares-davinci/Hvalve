@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <log/log.h>
 #include <log/log_id.h>
 #include <statslog.h>
@@ -25,6 +26,7 @@
 #include <string.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <unistd.h>
 
 #ifdef LMKD_LOG_STATS
 
