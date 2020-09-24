@@ -2145,9 +2145,11 @@ static void trace_log(const char *fmt, ...)
     len = strlen(buf);
     ret = TEMP_FAILURE_RETRY(write(fd, buf, len));
     if (ret < 0) {
-        ALOGE("Error writing " TRACE_MARKER_PATH ";errno=%d", errno);
-        close(fd);
-        fd = -1;
+        if (errno != EBADF) {
+            ALOGE("Error writing " TRACE_MARKER_PATH ";errno=%d", errno);
+            close(fd);
+            fd = -1;
+        }
         return;
     } else if (ret < len) {
         ALOGE("Short write on " TRACE_MARKER_PATH "; length=%zd", ret);
