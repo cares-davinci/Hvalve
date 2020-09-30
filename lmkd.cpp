@@ -4265,6 +4265,9 @@ static void update_perf_props() {
           enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
           strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
           enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+          //Update kernel interface during re-init.
+          use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
     }
 
     /* Load IOP library for PApps */
