@@ -2145,9 +2145,11 @@ static void trace_log(const char *fmt, ...)
     len = strlen(buf);
     ret = TEMP_FAILURE_RETRY(write(fd, buf, len));
     if (ret < 0) {
-        ALOGE("Error writing " TRACE_MARKER_PATH ";errno=%d", errno);
-        close(fd);
-        fd = -1;
+        if (errno != EBADF) {
+            ALOGE("Error writing " TRACE_MARKER_PATH ";errno=%d", errno);
+            close(fd);
+            fd = -1;
+        }
         return;
     } else if (ret < len) {
         ALOGE("Short write on " TRACE_MARKER_PATH "; length=%zd", ret);
@@ -4263,6 +4265,9 @@ static void update_perf_props() {
           enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
           strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
           enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+
+          //Update kernel interface during re-init.
+          use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
     }
 
     /* Load IOP library for PApps */
