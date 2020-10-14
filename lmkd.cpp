@@ -88,6 +88,8 @@
 #define VMSTAT_PATH "/proc/vmstat"
 #define PROC_STATUS_TGID_FIELD "Tgid:"
 #define TRACE_MARKER_PATH "/sys/kernel/debug/tracing/trace_marker"
+#define PROC_STATUS_RSS_FIELD "VmRSS:"
+#define PROC_STATUS_SWAP_FIELD "VmSwap:"
 #define LINE_MAX 128
 #define MAX_NR_ZONES 6
 
@@ -105,6 +107,7 @@
 #define EIGHT_MEGA (1 << 23)
 
 #define TARGET_UPDATE_MIN_INTERVAL_MS 1000
+#define THRASHING_RESET_INTERVAL_MS 1000
 
 #define NS_PER_MS (NS_PER_SEC / MS_PER_SEC)
 #define US_PER_MS (US_PER_SEC / MS_PER_SEC)
@@ -880,8 +883,16 @@ static void poll_kernel(int poll_fd) {
             ctrl_data_write_lmk_kill_occurred((pid_t)pid, (uid_t)uid);
             mem_st.process_start_time_ns = starttime * (NS_PER_SEC / sysconf(_SC_CLK_TCK));
             mem_st.rss_in_bytes = rss_in_pages * PAGE_SIZE;
-            stats_write_lmk_kill_occurred_pid(uid, pid, oom_score_adj,
-                                              min_score_adj, 0, &mem_st);
+
+            struct kill_stat kill_st = {
+                .uid = static_cast<int32_t>(uid),
+                .kill_reason = NONE,
+                .oom_score = oom_score_adj,
+                .min_oom_score = min_score_adj,
+                .free_mem_kb = 0,
+                .free_swap_kb = 0,
+            };
+            stats_write_lmk_kill_occurred_pid(pid, &kill_st, &mem_st);
         }
 
         free(taskname);
@@ -1013,30 +1024,33 @@ static inline long get_time_diff_ms(struct timespec *from,
            (to->tv_nsec - from->tv_nsec) / (long)NS_PER_MS;
 }
 
-static int proc_get_tgid(int pid) {
+/* Reads /proc/pid/status into buf. */
+static bool read_proc_status(int pid, char *buf, size_t buf_sz) {
     char path[PATH_MAX];
-    char buf[PAGE_SIZE];
     int fd;
     ssize_t size;
-    char *pos;
-    int64_t tgid = -1;
 
     snprintf(path, PATH_MAX, "/proc/%d/status", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        return -1;
+        return false;
     }
 
-    size = read_all(fd, buf, sizeof(buf) - 1);
+    size = read_all(fd, buf, buf_sz - 1);
+    close(fd);
     if (size < 0) {
-        goto out;
+        return false;
     }
     buf[size] = 0;
+    return true;
+}
 
-    pos = buf;
+/* Looks for tag in buf and parses the first integer */
+static bool parse_status_tag(char *buf, const char *tag, int64_t *out) {
+    char *pos = buf;
     while (true) {
-        pos = strstr(pos, PROC_STATUS_TGID_FIELD);
-        /* Stop if TGID tag not found or found at the line beginning */
+        pos = strstr(pos, tag);
+        /* Stop if tag not found or found at the line beginning */
         if (pos == NULL || pos == buf || pos[-1] == '\n') {
             break;
         }
@@ -1044,16 +1058,12 @@ static int proc_get_tgid(int pid) {
     }
 
     if (pos == NULL) {
-        goto out;
+        return false;
     }
 
-    pos += strlen(PROC_STATUS_TGID_FIELD);
-    while (*pos == ' ') pos++;
-    parse_int64(pos, &tgid);
-
-out:
-    close(fd);
-    return (int)tgid;
+    pos += strlen(tag);
+    while (*pos == ' ') ++pos;
+    return parse_int64(pos, out);
 }
 
 static long proc_get_rss(int pid) {
@@ -1189,7 +1199,8 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     struct lmk_procprio params;
     bool is_system_server;
     struct passwd *pwdrec;
-    int tgid;
+    int64_t tgid;
+    char buf[PAGE_SIZE];
 
     lmkd_pack_get_procprio(packet, field_count, &params);
 
@@ -1205,11 +1216,12 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     }
 
     /* Check if registered process is a thread group leader */
-    tgid = proc_get_tgid(params.pid);
-    if (tgid >= 0 && tgid != params.pid) {
-        ALOGE("Attempt to register a task that is not a thread group leader (tid %d, tgid %d)",
-            params.pid, tgid);
-        return;
+    if (read_proc_status(params.pid, buf, sizeof(buf))) {
+        if (parse_status_tag(buf, PROC_STATUS_TGID_FIELD, &tgid) && tgid != params.pid) {
+            ALOGE("Attempt to register a task that is not a thread group leader "
+                  "(tid %d, tgid %" PRId64 ")", params.pid, tgid);
+            return;
+        }
     }
 
     /* gid containing AID_READPROC required */
@@ -2015,7 +2027,7 @@ static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason,
     }
 }
 
-static void killinfo_log(struct proc* procp, int min_oom_score, int tasksize,
+static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
                          int kill_reason, union meminfo *mi,
                          struct wakeup_info *wi, struct timespec *tm) {
     /* log process information */
@@ -2023,7 +2035,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int tasksize,
     android_log_write_int32(ctx, procp->uid);
     android_log_write_int32(ctx, procp->oomadj);
     android_log_write_int32(ctx, min_oom_score);
-    android_log_write_int32(ctx, (int32_t)min(tasksize * page_k, INT32_MAX));
+    android_log_write_int32(ctx, (int32_t)min(rss_kb, INT32_MAX));
     android_log_write_int32(ctx, kill_reason);
 
     /* log meminfo fields */
@@ -2587,38 +2599,49 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
     maxevents++;
 }
 
-/* Kill one process specified by procp.  Returns the size of the process killed */
-static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reason,
+/* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
+static int kill_one_process(struct proc* procp, int min_oom_score, enum kill_reasons kill_reason,
                             const char *kill_desc, union meminfo *mi, struct wakeup_info *wi,
                             struct timespec *tm) {
     int pid = procp->pid;
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
-    int tgid;
     char *taskname;
-    long tasksize;
     int r;
     int result = -1;
     struct memory_stat *mem_st;
-    char buf[LINE_MAX];
+    struct kill_stat kill_st;
+    int64_t tgid;
+    int64_t rss_kb;
+    int64_t swap_kb;
+    char buf[PAGE_SIZE];
 
-    tgid = proc_get_tgid(pid);
-    if (tgid >= 0 && tgid != pid) {
-        ALOGE("Possible pid reuse detected (pid %d, tgid %d)!", pid, tgid);
+    if (!read_proc_status(pid, buf, sizeof(buf))) {
+        goto out;
+    }
+    if (!parse_status_tag(buf, PROC_STATUS_TGID_FIELD, &tgid)) {
+        ALOGE("Unable to parse tgid from /proc/%d/status", pid);
+        goto out;
+    }
+    if (tgid != pid) {
+        ALOGE("Possible pid reuse detected (pid %d, tgid %" PRId64 ")!", pid, tgid);
+        goto out;
+    }
+    // Zombie processes will not have RSS / Swap fields.
+    if (!parse_status_tag(buf, PROC_STATUS_RSS_FIELD, &rss_kb)) {
+        goto out;
+    }
+    if (!parse_status_tag(buf, PROC_STATUS_SWAP_FIELD, &swap_kb)) {
         goto out;
     }
 
     taskname = proc_get_name(pid, buf, sizeof(buf));
+    // taskname will point inside buf, do not reuse buf onwards.
     if (!taskname) {
         goto out;
     }
 
-    tasksize = proc_get_size(pid);
-    if (tasksize <= 0) {
-        goto out;
-    }
-
-    mem_st = stats_read_memory_stat(per_app_memcg, pid, uid);
+    mem_st = stats_read_memory_stat(per_app_memcg, pid, uid, rss_kb * 1024, swap_kb * 1024);
 
     TRACE_KILL_START(pid);
 
@@ -2646,21 +2669,28 @@ static int kill_one_process(struct proc* procp, int min_oom_score, int kill_reas
 
     inc_killcnt(procp->oomadj);
 
-    killinfo_log(procp, min_oom_score, tasksize, kill_reason, mi, wi, tm);
+    killinfo_log(procp, min_oom_score, rss_kb, kill_reason, mi, wi, tm);
 
     if (kill_desc) {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %ldkB; reason: %s", taskname, pid,
-              uid, procp->oomadj, tasksize * page_k, kill_desc);
+        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %" PRId64 "kB; reason: %s", taskname, pid,
+              uid, procp->oomadj, rss_kb, kill_desc);
     } else {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %ldkB", taskname, pid,
-              uid, procp->oomadj, tasksize * page_k);
+        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %" PRId64 "kB", taskname, pid,
+              uid, procp->oomadj, rss_kb);
     }
 
-    stats_write_lmk_kill_occurred(uid, taskname, procp->oomadj, min_oom_score, tasksize, mem_st);
+    kill_st.uid = static_cast<int32_t>(uid);
+    kill_st.taskname = taskname;
+    kill_st.kill_reason = kill_reason;
+    kill_st.oom_score = procp->oomadj;
+    kill_st.min_oom_score = min_oom_score;
+    kill_st.free_mem_kb = mi->field.nr_free_pages * page_k;
+    kill_st.free_swap_kb = mi->field.free_swap * page_k;
+    stats_write_lmk_kill_occurred(&kill_st, mem_st);
 
     ctrl_data_write_lmk_kill_occurred((pid_t)pid, uid);
 
-    result = tasksize;
+    result = rss_kb / page_k;
 
 out:
     /*
@@ -2675,8 +2705,9 @@ out:
  * Find one process to kill at or above the given oom_adj level.
  * Returns size of the killed process.
  */
-static int find_and_kill_process(int min_score_adj, int kill_reason, const char *kill_desc,
-                                 union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
+static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reason,
+                                 const char *kill_desc, union meminfo *mi,
+                                 struct wakeup_info *wi, struct timespec *tm) {
     int i;
     int killed_size = 0;
     bool can_retry = true;
@@ -2916,37 +2947,27 @@ static int calc_swap_utilization(union meminfo *mi) {
 }
 
 static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_params) {
-    enum kill_reasons {
-        NONE = -1, /* To denote no kill condition */
-        PRESSURE_AFTER_KILL = 0,
-        CRITICAL_KILL,
-        LOW_SWAP_AND_THRASHING,
-        LOW_MEM_AND_SWAP,
-        LOW_MEM_AND_THRASHING,
-        DIRECT_RECL_AND_THRASHING,
-        COMPACTION,
-        LOW_MEM_AND_SWAP_UTIL,
-        KILL_REASON_COUNT
-    };
     enum reclaim_state {
         NO_RECLAIM = 0,
         KSWAPD_RECLAIM,
         DIRECT_RECLAIM,
     };
     static int64_t init_ws_refault;
+    static int64_t prev_workingset_refault;
     static int64_t base_file_lru;
     static int64_t init_pgscan_kswapd;
     static int64_t init_pgscan_direct;
     static int64_t init_pgskip[VS_PGSKIP_LAST_ZONE - VS_PGSKIP_FIRST_ZONE + 1];
     static int64_t swap_low_threshold;
     static bool killing;
-    static int thrashing_limit;
-    static bool in_reclaim;
+    static int thrashing_limit = thrashing_limit_pct;
     static struct zone_watermarks watermarks;
     static struct timespec wmark_update_tm;
     static struct wakeup_info wi;
     static struct timespec last_pa_update_tm;
     static int64_t init_compact_stall;
+    static struct timespec thrashing_reset_tm;
+    static int64_t prev_thrash_growth = 0;
 
     union meminfo mi;
     union vmstat vs;
@@ -2964,6 +2985,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     int min_score_adj = 0;
     bool in_compaction = false;
     int swap_util = 0;
+    long since_thrashing_reset_ms;
 
     ULMK_LOG(D, "%s pressure event %s", level_name[level], events ?
              "triggered" : "polling check");
@@ -3015,6 +3037,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         /* Reset file-backed pagecache size and refault amounts after a kill */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
         init_ws_refault = vs.field.workingset_refault;
+        thrashing_reset_tm = curr_tm;
+        prev_thrash_growth = 0;
     }
 
     if (debug_process_killing) {
@@ -3062,13 +3086,11 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             init_pgskip[PGSKIP_IDX(i)] = vs.arr[i];
         }
         reclaim = KSWAPD_RECLAIM;
-    } else {
-        in_reclaim = false;
-
+    } else if (vs.field.workingset_refault == prev_workingset_refault) {
         if (enable_preferred_apps &&
-                (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >= pa_update_timeout_ms)) {
-            perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
-            last_pa_update_tm = curr_tm;
+                  (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >= pa_update_timeout_ms)) {
+              perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
+              last_pa_update_tm = curr_tm;
         }
 
         if (!in_compaction) {
@@ -3079,19 +3101,48 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         }
     }
 
+    prev_workingset_refault = vs.field.workingset_refault;
 
-    if (!in_reclaim) {
-        /* Record file-backed pagecache size when entering reclaim cycle */
+     /*
+     * It's possible we fail to find an eligible process to kill (ex. no process is
+     * above oom_adj_min). When this happens, we should retry to find a new process
+     * for a kill whenever a new eligible process is available. This is especially
+     * important for a slow growing refault case. While retrying, we should keep
+     * monitoring new thrashing counter as someone could release the memory to mitigate
+     * the thrashing. Thus, when thrashing reset window comes, we decay the prev thrashing
+     * counter by window counts. if the counter is still greater than thrashing limit,
+     * we preserve the current prev_thrash counter so we will retry kill again. Otherwise,
+     * we reset the prev_thrash counter so we will stop retrying.
+     */
+    since_thrashing_reset_ms = get_time_diff_ms(&thrashing_reset_tm, &curr_tm);
+    if (since_thrashing_reset_ms > THRASHING_RESET_INTERVAL_MS) {
+        long windows_passed;
+        /* Calculate prev_thrash_growth if we crossed THRASHING_RESET_INTERVAL_MS */
+        prev_thrash_growth = (vs.field.workingset_refault - init_ws_refault) * 100
+                            / (base_file_lru + 1);
+        windows_passed = (since_thrashing_reset_ms / THRASHING_RESET_INTERVAL_MS);
+        /*
+         * Decay prev_thrashing unless over-the-limit thrashing was registered in the window we
+         * just crossed, which means there were no eligible processes to kill. We preserve the
+         * counter in that case to ensure a kill if a new eligible process appears.
+         */
+        if (windows_passed > 1 || prev_thrash_growth < thrashing_limit) {
+            prev_thrash_growth >>= windows_passed;
+        }
+
+        /* Record file-backed pagecache size when crossing THRASHING_RESET_INTERVAL_MS */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
         init_ws_refault = vs.field.workingset_refault;
+        thrashing_reset_tm = curr_tm;
         thrashing_limit = thrashing_limit_pct;
     } else {
         /* Calculate what % of the file-backed pagecache refaulted so far */
-        thrashing = (vs.field.workingset_refault - init_ws_refault) * 100 / base_file_lru;
+        thrashing = (vs.field.workingset_refault - init_ws_refault) * 100 / (base_file_lru + 1);
         ULMK_LOG(D, "thrashing: %" PRId64 "%% thrashing_limit: %d%%", thrashing,
                  thrashing_limit);
     }
-    in_reclaim = true;
+    /* Add previous cycle's decayed thrashing amount */
+    thrashing += prev_thrash_growth;
 
     /*
      * Refresh watermarks once per min in case user updated one of the margins.
@@ -3108,7 +3159,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
         calc_zone_watermarks(&zi, &watermarks);
         wmark_update_tm = curr_tm;
-     }
+    }
 
     /* Find out which watermark is breached if any */
     wmark = get_lowest_watermark(&mi, &watermarks);
@@ -3507,7 +3558,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], -1, NULL, &mi, &wi, &curr_tm) == 0) {
+        if (find_and_kill_process(level_oomadj[level], NONE, NULL, &mi, &wi, &curr_tm) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3539,7 +3590,7 @@ do_kill:
             }
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, -1, NULL, &mi, &wi, &curr_tm);
+        pages_freed = find_and_kill_process(min_score_adj, NONE, NULL, &mi, &wi, &curr_tm);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
@@ -3916,6 +3967,8 @@ static bool polling_paused(struct polling_params *poll_params) {
 static void resume_polling(struct polling_params *poll_params, struct timespec curr_tm) {
     poll_params->poll_start_tm = curr_tm;
     poll_params->poll_handler = poll_params->paused_handler;
+    poll_params->polling_interval_ms = PSI_POLL_PERIOD_SHORT_MS;
+    poll_params->paused_handler = NULL;
 }
 
 static void call_handler(struct event_handler_info* handler_info,
@@ -4032,12 +4085,8 @@ static void mainloop(void) {
             bool poll_now;
 
             clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
-            if (poll_params.poll_handler == poll_params.paused_handler) {
-                /*
-                 * Just transitioned into POLLING_RESUME. Reset paused_handler
-                 * and poll immediately
-                 */
-                poll_params.paused_handler = NULL;
+            if (poll_params.update == POLLING_RESUME) {
+                /* Just transitioned into POLLING_RESUME, poll immediately. */
                 poll_now = true;
                 nevents = 0;
             } else {
@@ -4080,6 +4129,7 @@ static void mainloop(void) {
                     stop_wait_for_proc_kill(false);
                     if (polling_paused(&poll_params)) {
                         clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+                        poll_params.update = POLLING_RESUME;
                         resume_polling(&poll_params, curr_tm);
                     }
                 }
