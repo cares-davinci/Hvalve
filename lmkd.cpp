@@ -2427,7 +2427,7 @@ repeat:
                 break;
 
             procp->pid = pid;
-	    procp->pidfd = -1;
+            procp->pidfd = -1;
             procp->uid = 0;
             procp->oomadj = oomadj;
             proc_insert(procp);
@@ -2817,24 +2817,24 @@ void calc_zone_watermarks(struct zoneinfo *zi, struct zone_meminfo *zmi, int64_t
 
     for (int node_idx = 0; node_idx < zi->node_count; node_idx++) {
         struct zoneinfo_node *node = &zi->nodes[node_idx];
-	int i = VS_PGSKIP_FIRST_ZONE;
+        int i = VS_PGSKIP_FIRST_ZONE;
         for (int zone_idx = 0; zone_idx < node->zone_count; zone_idx++) {
             struct zoneinfo_zone *zone = &node->zones[zone_idx];
 
-	    while (pgskip_deltas[PGSKIP_IDX(i)]  < 0) ++i;
+            while (pgskip_deltas[PGSKIP_IDX(i)]  < 0) ++i;
 
             if (!zone->fields.field.present) {
-		i++;
+                i++;
                 continue;
             }
 
-	    if (!pgskip_deltas[PGSKIP_IDX(i++)]) {
-		    zmi->nr_free_pages += zone->fields.field.nr_free_pages;
-		    zmi->cma_free += zone->fields.field.nr_free_cma;
-	            watermarks->high_wmark += zone->max_protection + zone->fields.field.high;
-		    watermarks->low_wmark += zone->max_protection + zone->fields.field.low;
-	            watermarks->min_wmark += zone->max_protection + zone->fields.field.min;
-	    }
+            if (!pgskip_deltas[PGSKIP_IDX(i++)]) {
+                zmi->nr_free_pages += zone->fields.field.nr_free_pages;
+                zmi->cma_free += zone->fields.field.nr_free_cma;
+                watermarks->high_wmark += zone->max_protection + zone->fields.field.high;
+                watermarks->low_wmark += zone->max_protection + zone->fields.field.low;
+                watermarks->min_wmark += zone->max_protection + zone->fields.field.min;
+            }
         }
     }
 
@@ -2873,8 +2873,8 @@ static void fill_log_pgskip_stats(union vmstat *vs, int64_t *init_pgskip, int64_
             pgskip_deltas[PGSKIP_IDX(i)] = vs->arr[i] -
                                            init_pgskip[PGSKIP_IDX(i)];
         } else {
-		pgskip_deltas[PGSKIP_IDX(i)] = -1;
-	}
+            pgskip_deltas[PGSKIP_IDX(i)] = -1;
+        }
     }
 
     if (debug_process_killing) {
@@ -2896,7 +2896,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         LOW_MEM_AND_SWAP,
         LOW_MEM_AND_THRASHING,
         DIRECT_RECL_AND_THRASHING,
-	DIRECT_RECL_AND_THROT,
+        DIRECT_RECL_AND_THROT,
         COMPACTION,
         KILL_REASON_COUNT
     };
@@ -2904,7 +2904,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         NO_RECLAIM = 0,
         KSWAPD_RECLAIM,
         DIRECT_RECLAIM,
-	DIRECT_RECLAIM_THROTTLE,
+        DIRECT_RECLAIM_THROTTLE,
     };
     static int64_t init_ws_refault;
     static int64_t base_file_lru;
@@ -3027,8 +3027,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         }
         reclaim = DIRECT_RECLAIM;
     }  else if (vs.field.pgscan_direct_throttle > init_direct_throttle) {
-	init_direct_throttle = vs.field.pgscan_direct_throttle;
-	reclaim = DIRECT_RECLAIM_THROTTLE;
+        init_direct_throttle = vs.field.pgscan_direct_throttle;
+        reclaim = DIRECT_RECLAIM_THROTTLE;
     } else if (vs.field.pgscan_kswapd > init_pgscan_kswapd) {
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
         for (i = VS_PGSKIP_FIRST_ZONE; i <= VS_PGSKIP_LAST_ZONE; i++) {
@@ -3067,7 +3067,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     in_reclaim = true;
 
     if (zoneinfo_parse(&zi) < 0) {
-	ALOGE("Failed to parse zoneinfo!");
+        ALOGE("Failed to parse zoneinfo!");
         return;
     }
 
@@ -3077,8 +3077,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     wmark = get_lowest_watermark(&mi, &zone_mem_info);
     log_meminfo(&mi, wmark);
     if (level < VMPRESS_LEVEL_CRITICAL && (reclaim == DIRECT_RECLAIM ||
-			reclaim == DIRECT_RECLAIM_THROTTLE))
-	    last_event_upgraded = true;
+                                           reclaim == DIRECT_RECLAIM_THROTTLE))
+        last_event_upgraded = true;
 
     /*
      * TODO: move this logic into a separate function
@@ -3093,8 +3093,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         kill_reason = PRESSURE_AFTER_KILL;
         strlcpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
     } else if (reclaim == DIRECT_RECLAIM_THROTTLE) {
-	kill_reason = DIRECT_RECL_AND_THROT;
-	strlcpy(kill_desc, "system processes are being throttled", sizeof(kill_desc));
+        kill_reason = DIRECT_RECL_AND_THROT;
+        strlcpy(kill_desc, "system processes are being throttled", sizeof(kill_desc));
     } else if (level >= VMPRESS_LEVEL_CRITICAL && (events != 0 || wmark <= WMARK_HIGH)) {
         /*
          * Device is too busy reclaiming memory which might lead to ANR.
@@ -3185,12 +3185,12 @@ no_kill:
      */
 
     if (events || killing || reclaim == DIRECT_RECLAIM || reclaim == DIRECT_RECLAIM_THROTTLE) {
-	if (count_upgraded_event >= psi_cont_event_thresh) {
-		poll_params->update = POLLING_CRIT_UPGRADE;
-		count_upgraded_event = 0;
-	} else if (!poll_params->poll_handler || data >= poll_params->poll_handler->data) {
-		poll_params->update = POLLING_START;
-	}
+        if (count_upgraded_event >= psi_cont_event_thresh) {
+            poll_params->update = POLLING_CRIT_UPGRADE;
+            count_upgraded_event = 0;
+        } else if (!poll_params->poll_handler || data >= poll_params->poll_handler->data) {
+            poll_params->update = POLLING_START;
+        }
     }
 
     /* Decide the polling interval */
@@ -3916,9 +3916,9 @@ static void call_handler(struct event_handler_info* handler_info,
         }
         break;
     case POLLING_CRIT_UPGRADE:
-	poll_params->poll_start_tm = curr_tm;
-	poll_params->poll_handler = &vmpressure_hinfo[VMPRESS_LEVEL_CRITICAL];
-	break;
+        poll_params->poll_start_tm = curr_tm;
+        poll_params->poll_handler = &vmpressure_hinfo[VMPRESS_LEVEL_CRITICAL];
+        break;
     }
 }
 
@@ -4087,8 +4087,8 @@ static void mainloop(void) {
             }
             if (evt->data.ptr) {
                 handler_info = (struct event_handler_info*)evt->data.ptr;
-		if ((handler_info->handler == mp_event_common ||
-		     handler_info->handler == mp_event_psi) &&
+                if ((handler_info->handler == mp_event_common ||
+                     handler_info->handler == mp_event_psi) &&
 			(handler_info->data == VMPRESS_LEVEL_MEDIUM ||
 			  handler_info->data == VMPRESS_LEVEL_CRITICAL)) {
 			check_cont_lmkd_events(handler_info->data);
@@ -4219,9 +4219,9 @@ static void update_perf_props() {
           strlcpy(property, perf_get_prop("ro.lmk.use_new_strategy_dup", default_value).value, PROPERTY_VALUE_MAX);
           force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
-	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_CONT_EVENT_THRESH);
-	  strlcpy(property, perf_get_prop("ro.lmk.psi_cont_event_thresh", default_value).value, PROPERTY_VALUE_MAX);
-	  psi_cont_event_thresh = strtod(property, NULL);
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_CONT_EVENT_THRESH);
+          strlcpy(property, perf_get_prop("ro.lmk.psi_cont_event_thresh", default_value).value, PROPERTY_VALUE_MAX);
+          psi_cont_event_thresh = strtod(property, NULL);
           /*The following properties are not intoduced by Google
            *hence kept as it is */
           strlcpy(property, perf_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
