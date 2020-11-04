@@ -157,6 +157,10 @@
 #define PSI_CONT_EVENT_THRESH (4)
 #define LMKD_REINIT_PROP "lmkd.reinit"
 
+#define PSI_OLD_LOW_THRESH_MS 70
+#define PSI_OLD_MED_THRESH_MS 100
+#define PSI_OLD_CRIT_THRESH_MS 70
+
 static inline int sys_pidfd_open(pid_t pid, unsigned int flags) {
     return syscall(__NR_pidfd_open, pid, flags);
 }
@@ -235,9 +239,9 @@ static int psi_cont_event_thresh = PSI_CONT_EVENT_THRESH;
 static int psi_window_size_ms = PSI_WINDOW_SIZE_MS;
 static int psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
-    { PSI_SOME, 70 },    /* 70ms out of 1sec for partial stall */
-    { PSI_SOME, 100 },   /* 100ms out of 1sec for partial stall */
-    { PSI_FULL, 70 },    /* 70ms out of 1sec for complete stall */
+    { PSI_SOME, PSI_OLD_LOW_THRESH_MS },    /* Default 70ms out of 1sec for partial stall */
+    { PSI_SOME, PSI_OLD_MED_THRESH_MS },   /* Default 100ms out of 1sec for partial stall */
+    { PSI_FULL, PSI_OLD_CRIT_THRESH_MS },    /* Default 70ms out of 1sec for complete stall */
     { PSI_FULL, PSI_SCRIT_COMPLETE_STALL_MS }, /* Default 80ms out of 1sec for complete stall */
 };
 
@@ -607,8 +611,11 @@ static union vmstat s_crit_base;
 static bool s_crit_event = false;
 static bool s_crit_event_upgraded = false;
 
-/* PAGE_SIZE / 1024 */
-static long page_k;
+/*
+ * Initialize this as we decide the window size based on ram size for
+ * lowram targets on old strategy.
+ */
+static long page_k = PAGE_SIZE / 1024;
 
 static void init_PreferredApps();
 static void update_perf_props();
@@ -3241,8 +3248,13 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
 			    if (count_upgraded_event >= 4) {
 				    count_upgraded_event = 0;
 				    s_crit_event = true;
-			    } else
+				    if (debug_process_killing)
+					    ULMK_LOG(D, "Medium/Critical is permanently upgraded to Supercritical event\n");
+			    } else {
 				    s_crit_event = s_crit_event_upgraded = true;
+				    if (debug_process_killing)
+					    ULMK_LOG(D, "Medium/Critical is upgraded to Supercritical event\n");
+			    }
 			    s_crit_base = current;
 		    }
 		    sync = async = 0;
@@ -3600,6 +3612,10 @@ static bool init_psi_monitors() {
         psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = 0;
         psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = psi_partial_stall_ms;
         psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = psi_complete_stall_ms;
+    } else {
+        psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = PSI_OLD_LOW_THRESH_MS;
+        psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = PSI_OLD_MED_THRESH_MS;
+        psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = PSI_OLD_CRIT_THRESH_MS;
     }
 
     if (!init_mp_psi(VMPRESS_LEVEL_LOW, use_new_strategy)) {
@@ -3745,22 +3761,8 @@ static void destroy_monitors() {
     }
 }
 
-static int init(void) {
-    static struct event_handler_info kernel_poll_hinfo = { 0, kernel_event_handler };
-    struct reread_data file_data = {
-        .filename = ZONEINFO_PATH,
-        .fd = -1,
-    };
-    struct epoll_event epev;
-    int pidfd;
+static void update_psi_window_size() {
     union meminfo info;
-    int i;
-    int ret;
-
-    page_k = sysconf(_SC_PAGESIZE);
-    if (page_k == -1)
-        page_k = PAGE_SIZE;
-    page_k /= 1024;
 
     if (force_use_old_strategy) {
 	    if (!meminfo_parse(&info)) {
@@ -3780,13 +3782,31 @@ static int init(void) {
 	    } else
 		    ULMK_LOG(E, "Failed to parse the meminfo\n");
     }
-
     /*
      * Ensure min polling period for supercritical event is no less than
      * PSI_POLL_PERIOD_SHORT_MS.
      */
     if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_SHORT_MS)
 	    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
+}
+
+static int init(void) {
+    static struct event_handler_info kernel_poll_hinfo = { 0, kernel_event_handler };
+    struct reread_data file_data = {
+        .filename = ZONEINFO_PATH,
+        .fd = -1,
+    };
+    struct epoll_event epev;
+    int pidfd;
+    int i;
+    int ret;
+
+    page_k = sysconf(_SC_PAGESIZE);
+    if (page_k == -1)
+        page_k = PAGE_SIZE;
+    page_k /= 1024;
+
+    update_psi_window_size();
 
     epollfd = epoll_create(MAX_EPOLL_EVENTS);
     if (epollfd == -1) {
@@ -4241,6 +4261,7 @@ static void update_perf_props() {
 
           //Update kernel interface during re-init.
           use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
+	  update_psi_window_size();
     }
 
     /* Load IOP library for PApps */
