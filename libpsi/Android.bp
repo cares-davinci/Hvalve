@@ -6,8 +6,8 @@ cc_library_headers {
 
 cc_library {
     name: "libpsi",
-    vendor_available: true,
     srcs: ["psi.cpp"],
+    vendor_available: true,
     shared_libs: [
         "liblog"
     ],
