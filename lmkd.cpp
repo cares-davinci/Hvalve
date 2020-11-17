@@ -248,6 +248,7 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_FULL, PSI_OLD_CRIT_THRESH_MS },    /* Default 70ms out of 1sec for complete stall */
     { PSI_FULL, PSI_SCRIT_COMPLETE_STALL_MS }, /* Default 80ms out of 1sec for complete stall */
 };
+static int wmark_boost_factor = 1;
 
 static android_log_context ctx;
 
@@ -2854,10 +2855,10 @@ static enum zone_watermark get_lowest_watermark(union meminfo *mi __unused,
     if (nr_free_pages < watermarks->min_wmark) {
         return WMARK_MIN;
     }
-    if (nr_free_pages < watermarks->low_wmark) {
+    if (nr_free_pages < wmark_boost_factor * watermarks->low_wmark) {
         return WMARK_LOW;
     }
-    if (nr_free_pages < watermarks->high_wmark) {
+    if (nr_free_pages < wmark_boost_factor * watermarks->high_wmark) {
         return WMARK_HIGH;
     }
     return WMARK_NONE;
@@ -3212,10 +3213,13 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = PRESSURE_AFTER_KILL;
         strlcpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
+        if (wmark > WMARK_MIN) {
+            min_score_adj = VISIBLE_APP_ADJ;
+        }
     } else if (reclaim == DIRECT_RECLAIM_THROTTLE) {
         kill_reason = DIRECT_RECL_AND_THROT;
         strlcpy(kill_desc, "system processes are being throttled", sizeof(kill_desc));
-    } else if (level >= VMPRESS_LEVEL_CRITICAL && (events != 0 || wmark <= WMARK_HIGH)) {
+    } else if (level >= VMPRESS_LEVEL_CRITICAL && wmark <= WMARK_HIGH) {
         /*
          * Device is too busy reclaiming memory which might lead to ANR.
          * Critical level is triggered when PSI complete stall (all tasks are blocked because
@@ -3233,7 +3237,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             "kB < %" PRId64 "kB) and thrashing (%" PRId64 "%%)",
             mi.field.free_swap * page_k, swap_low_threshold * page_k, thrashing);
         /* Do not kill perceptible apps unless below min watermark */
-        if (wmark > WMARK_MIN && level == VMPRESS_LEVEL_MEDIUM) {
+        if (wmark > WMARK_MIN) {
             min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
         }
     } else if (swap_is_low && wmark <= WMARK_HIGH) {
@@ -3271,6 +3275,10 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
         min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+    } else if (reclaim == DIRECT_RECLAIM && wmark <= WMARK_HIGH) {
+        kill_reason = DIRECT_RECL_AND_LOW_MEM;
+        strlcpy(kill_desc, "device is in direct reclaim and low on memory", sizeof(kill_desc));
+        min_score_adj = PERCEPTIBLE_APP_ADJ;
     } else if (in_compaction && wmark <= WMARK_HIGH) {
         kill_reason = COMPACTION;
         strlcpy(kill_desc, "device is in compaction and low on memory", sizeof(kill_desc));
@@ -3327,6 +3335,8 @@ no_kill:
     if (swap_is_low || killing) {
         /* Fast polling during and after a kill or when swap is low */
         poll_params->polling_interval_ms = PSI_POLL_PERIOD_SHORT_MS;
+    } else if (level == VMPRESS_LEVEL_SUPER_CRITICAL) {
+        poll_params->polling_interval_ms = psi_poll_period_scrit_ms;
     } else {
         /* By default use long intervals */
         poll_params->polling_interval_ms = PSI_POLL_PERIOD_LONG_MS;
@@ -4369,6 +4379,32 @@ static void update_perf_props() {
           strlcpy(property, perf_get_prop("ro.lmk.psi_cont_event_thresh", default_value).value,
                   PROPERTY_VALUE_MAX);
           psi_cont_event_thresh = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING);
+          strlcpy(property, perf_get_prop("ro.lmk.thrashing_threshold", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          thrashing_limit_pct = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING_DECAY);
+          strlcpy(property, perf_get_prop("ro.lmk.thrashing_decay", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          thrashing_limit_decay_pct = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_LOW_SWAP);
+          strlcpy(property, perf_get_prop("ro.lmk.nstrat_low_swap", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          swap_free_low_percentage = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_partial_stall_ms);
+          strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_partial_ms", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          psi_partial_stall_ms = strtod(property, NULL);
+
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_complete_stall_ms);
+          strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_complete_ms", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          psi_complete_stall_ms = strtod(property, NULL);
+
           /*The following properties are not intoduced by Google
            *hence kept as it is */
           strlcpy(property, perf_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
@@ -4381,6 +4417,11 @@ static void update_perf_props() {
           enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
           strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
           enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", wmark_boost_factor);
+          strlcpy(property,
+                  perf_get_prop("ro.lmk.nstrat_wmark_boost_factor", default_value).value,
+                  PROPERTY_VALUE_MAX);
+          wmark_boost_factor = strtod(property, NULL);
 
           //Update kernel interface during re-init.
           use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;

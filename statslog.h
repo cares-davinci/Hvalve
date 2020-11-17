@@ -50,6 +50,7 @@ enum kill_reasons {
     LOW_MEM_AND_SWAP_UTIL,
     COMPACTION,
     DIRECT_RECL_AND_THROT,
+    DIRECT_RECL_AND_LOW_MEM,
     KILL_REASON_COUNT
 };
 
