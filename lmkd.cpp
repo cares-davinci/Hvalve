@@ -249,6 +249,7 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_FULL, PSI_SCRIT_COMPLETE_STALL_MS }, /* Default 80ms out of 1sec for complete stall */
 };
 static int wmark_boost_factor = 1;
+static int wbf_step = 1, wbf_effective = 1;
 
 static android_log_context ctx;
 
@@ -2855,10 +2856,10 @@ static enum zone_watermark get_lowest_watermark(union meminfo *mi __unused,
     if (nr_free_pages < watermarks->min_wmark) {
         return WMARK_MIN;
     }
-    if (nr_free_pages < wmark_boost_factor * watermarks->low_wmark) {
+    if (nr_free_pages < wbf_effective * watermarks->low_wmark) {
         return WMARK_LOW;
     }
-    if (nr_free_pages < wmark_boost_factor * watermarks->high_wmark) {
+    if (nr_free_pages < wbf_effective * watermarks->high_wmark) {
         return WMARK_HIGH;
     }
     return WMARK_NONE;
@@ -3027,6 +3028,11 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
     ULMK_LOG(D, "%s pressure event %s", level_name[level], events ?
              "triggered" : "polling check");
+
+    if (events &&
+       (!poll_params->poll_handler || data >= poll_params->poll_handler->data)) {
+           wbf_effective = wmark_boost_factor;
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
@@ -3291,6 +3297,12 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
                                                 &wi, &curr_tm);
         if (pages_freed > 0) {
             killing = true;
+            /* Killed..Just reduce/increase the boost... */
+            if (kill_reason == CRITICAL_KILL || kill_reason == DIRECT_RECL_AND_THROT) {
+                wbf_effective =  min(wbf_effective + wbf_step, wmark_boost_factor);
+            } else {
+                wbf_effective = max(wbf_effective - wbf_step, 1);
+            }
             if (cut_thrashing_limit) {
                 /*
                  * Cut thrasing limit by thrashing_limit_decay_pct percentage of the current
@@ -3328,6 +3340,9 @@ no_kill:
             count_upgraded_event = 0;
         } else if (!poll_params->poll_handler || data >= poll_params->poll_handler->data) {
             poll_params->update = POLLING_START;
+            if (!killing) {
+                wbf_effective = max(wbf_effective - wbf_step, 1);
+            }
         }
     }
 
@@ -4072,6 +4087,7 @@ static void call_handler(struct event_handler_info* handler_info,
             poll_params->poll_handler = NULL;
             poll_params->paused_handler = NULL;
             s_crit_event = false;
+            wbf_effective = wmark_boost_factor;
         }
         break;
     case POLLING_CRIT_UPGRADE:
@@ -4422,10 +4438,11 @@ static void update_perf_props() {
                   perf_get_prop("ro.lmk.nstrat_wmark_boost_factor", default_value).value,
                   PROPERTY_VALUE_MAX);
           wmark_boost_factor = strtod(property, NULL);
+          wbf_effective = wmark_boost_factor;
 
           //Update kernel interface during re-init.
           use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
-	  update_psi_window_size();
+          update_psi_window_size();
     }
 
     /* Load IOP library for PApps */
