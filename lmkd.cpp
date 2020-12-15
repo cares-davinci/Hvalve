@@ -336,21 +336,18 @@ struct zoneinfo_zone {
 enum zoneinfo_node_field {
     ZI_NODE_NR_INACTIVE_FILE = 0,
     ZI_NODE_NR_ACTIVE_FILE,
-    ZI_NODE_WORKINGSET_REFAULT,
     ZI_NODE_FIELD_COUNT
 };
 
 static const char* const zoneinfo_node_field_names[ZI_NODE_FIELD_COUNT] = {
     "nr_inactive_file",
     "nr_active_file",
-    "workingset_refault",
 };
 
 union zoneinfo_node_fields {
     struct {
         int64_t nr_inactive_file;
         int64_t nr_active_file;
-        int64_t workingset_refault;
     } field;
     int64_t arr[ZI_NODE_FIELD_COUNT];
 };
@@ -371,7 +368,6 @@ struct zoneinfo {
     int64_t totalreserve_pages;
     int64_t total_inactive_file;
     int64_t total_active_file;
-    int64_t total_workingset_refault;
 };
 
 /* Fields to parse in /proc/meminfo */
@@ -1718,7 +1714,6 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
         }
         zi->total_inactive_file += node->fields.field.nr_inactive_file;
         zi->total_active_file += node->fields.field.nr_active_file;
-        zi->total_workingset_refault += node->fields.field.workingset_refault;
     }
     return 0;
 }
