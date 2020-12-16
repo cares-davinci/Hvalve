@@ -336,21 +336,18 @@ struct zoneinfo_zone {
 enum zoneinfo_node_field {
     ZI_NODE_NR_INACTIVE_FILE = 0,
     ZI_NODE_NR_ACTIVE_FILE,
-    ZI_NODE_WORKINGSET_REFAULT,
     ZI_NODE_FIELD_COUNT
 };
 
 static const char* const zoneinfo_node_field_names[ZI_NODE_FIELD_COUNT] = {
     "nr_inactive_file",
     "nr_active_file",
-    "workingset_refault",
 };
 
 union zoneinfo_node_fields {
     struct {
         int64_t nr_inactive_file;
         int64_t nr_active_file;
-        int64_t workingset_refault;
     } field;
     int64_t arr[ZI_NODE_FIELD_COUNT];
 };
@@ -371,7 +368,6 @@ struct zoneinfo {
     int64_t totalreserve_pages;
     int64_t total_inactive_file;
     int64_t total_active_file;
-    int64_t total_workingset_refault;
 };
 
 /* Fields to parse in /proc/meminfo */
@@ -453,6 +449,7 @@ enum vmstat_field {
     VS_INACTIVE_FILE,
     VS_ACTIVE_FILE,
     VS_WORKINGSET_REFAULT,
+    VS_WORKINGSET_REFAULT_FILE,
     VS_PGSCAN_KSWAPD,
     VS_PGSCAN_DIRECT,
     VS_PGSCAN_DIRECT_THROTTLE,
@@ -464,6 +461,7 @@ static const char* const vmstat_field_names[MI_FIELD_COUNT] = {
     "nr_inactive_file",
     "nr_active_file",
     "workingset_refault",
+    "workingset_refault_file",
     "pgscan_kswapd",
     "pgscan_direct",
     "pgscan_direct_throttle",
@@ -475,6 +473,7 @@ union vmstat {
         int64_t nr_inactive_file;
         int64_t nr_active_file;
         int64_t workingset_refault;
+        int64_t workingset_refault_file;
         int64_t pgscan_kswapd;
         int64_t pgscan_direct;
         int64_t pgscan_direct_throttle;
@@ -1718,7 +1717,6 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
         }
         zi->total_inactive_file += node->fields.field.nr_inactive_file;
         zi->total_active_file += node->fields.field.nr_active_file;
-        zi->total_workingset_refault += node->fields.field.workingset_refault;
     }
     return 0;
 }
@@ -2348,6 +2346,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     int min_score_adj = 0;
     int swap_util = 0;
     long since_thrashing_reset_ms;
+    int64_t workingset_refault_file;
 
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
@@ -2373,6 +2372,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         ALOGE("Failed to parse vmstat!");
         return;
     }
+    /* Starting 5.9 kernel workingset_refault vmstat field was renamed workingset_refault_file */
+    workingset_refault_file = vs.field.workingset_refault ? : vs.field.workingset_refault_file;
 
     if (meminfo_parse(&mi) < 0) {
         ALOGE("Failed to parse meminfo!");
@@ -2385,7 +2386,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         cycle_after_kill = true;
         /* Reset file-backed pagecache size and refault amounts after a kill */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
-        init_ws_refault = vs.field.workingset_refault;
+        init_ws_refault = workingset_refault_file;
         thrashing_reset_tm = curr_tm;
         prev_thrash_growth = 0;
     }
@@ -2406,12 +2407,12 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     } else if (vs.field.pgscan_kswapd > init_pgscan_kswapd) {
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
         reclaim = KSWAPD_RECLAIM;
-    } else if (vs.field.workingset_refault == prev_workingset_refault) {
+    } else if (workingset_refault_file == prev_workingset_refault) {
         /* Device is not thrashing and not reclaiming, bail out early until we see these stats changing*/
         goto no_kill;
     }
 
-    prev_workingset_refault = vs.field.workingset_refault;
+    prev_workingset_refault = workingset_refault_file;
 
      /*
      * It's possible we fail to find an eligible process to kill (ex. no process is
@@ -2428,7 +2429,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     if (since_thrashing_reset_ms > THRASHING_RESET_INTERVAL_MS) {
         long windows_passed;
         /* Calculate prev_thrash_growth if we crossed THRASHING_RESET_INTERVAL_MS */
-        prev_thrash_growth = (vs.field.workingset_refault - init_ws_refault) * 100
+        prev_thrash_growth = (workingset_refault_file - init_ws_refault) * 100
                             / (base_file_lru + 1);
         windows_passed = (since_thrashing_reset_ms / THRASHING_RESET_INTERVAL_MS);
         /*
@@ -2442,12 +2443,12 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
         /* Record file-backed pagecache size when crossing THRASHING_RESET_INTERVAL_MS */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
-        init_ws_refault = vs.field.workingset_refault;
+        init_ws_refault = workingset_refault_file;
         thrashing_reset_tm = curr_tm;
         thrashing_limit = thrashing_limit_pct;
     } else {
         /* Calculate what % of the file-backed pagecache refaulted so far */
-        thrashing = (vs.field.workingset_refault - init_ws_refault) * 100 / (base_file_lru + 1);
+        thrashing = (workingset_refault_file - init_ws_refault) * 100 / (base_file_lru + 1);
     }
     /* Add previous cycle's decayed thrashing amount */
     thrashing += prev_thrash_growth;
