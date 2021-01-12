@@ -162,6 +162,8 @@
 #define PSI_OLD_MED_THRESH_MS 100
 #define PSI_OLD_CRIT_THRESH_MS 70
 
+#define NATIVE_PID_FD (-128)
+
 static inline int sys_pidfd_open(pid_t pid, unsigned int flags) {
     return syscall(__NR_pidfd_open, pid, flags);
 }
@@ -997,7 +999,12 @@ static int pid_remove(int pid) {
     if (procp->pidfd >= 0 && procp->pidfd != last_kill_pid_or_fd) {
         close(procp->pidfd);
     }
-    free(procp);
+
+    if (procp->pidfd != NATIVE_PID_FD)
+        free(procp);
+    else
+        memset(procp, 0, sizeof(struct proc));
+
     return 0;
 }
 
@@ -1036,8 +1043,8 @@ static inline long get_time_diff_ms(struct timespec *from,
 }
 
 static int proc_get_tgid(int pid) {
-    char path[PATH_MAX];
-    char buf[PAGE_SIZE];
+    static char path[PATH_MAX];
+    static char buf[PAGE_SIZE];
     int fd;
     ssize_t size;
     char *pos;
@@ -1079,8 +1086,8 @@ out:
 }
 
 static long proc_get_rss(int pid) {
-    char path[PATH_MAX];
-    char line[LINE_MAX];
+    static char path[PATH_MAX];
+    static char line[LINE_MAX];
     int fd;
     long rss = 0;
     long total;
@@ -1112,8 +1119,8 @@ static bool parse_vmswap(char *buf, long *data) {
 }
 
 static long proc_get_swap(int pid) {
-	char buf[PAGE_SIZE] = {0, };
-	char path[PATH_MAX] = {0, };
+	static char buf[PAGE_SIZE] = {0, };
+	static char path[PATH_MAX] = {0, };
 	ssize_t ret;
 	char *c, *save_ptr;
 	int fd;
@@ -1153,8 +1160,8 @@ static long proc_get_size(int pid)
 }
 
 static long proc_get_vm(int pid) {
-    char path[PATH_MAX];
-    char line[LINE_MAX];
+    static char path[PATH_MAX];
+    static char line[LINE_MAX];
     int fd;
     long total;
     ssize_t ret;
@@ -1177,7 +1184,7 @@ static long proc_get_vm(int pid) {
 }
 
 static char *proc_get_name(int pid, char *buf, size_t buf_size) {
-    char path[PATH_MAX];
+    static char path[PATH_MAX];
     int fd;
     char *cp;
     ssize_t ret;
@@ -2418,17 +2425,18 @@ static void set_process_group_and_prio(int pid, SchedPolicy sp, int prio) {
  * list may be obsolete. This case is handled by the loop in
  * find_and_kill_processes.
  */
-static void proc_get_script(void)
+static long proc_get_script(void)
 {
     static DIR* d = NULL;
     struct dirent* de;
-    char path[PATH_MAX];
+    static char path[PATH_MAX];
     static char line[LINE_MAX];
     ssize_t len;
     int fd, oomadj = OOM_SCORE_ADJ_MIN;
+    int r;
     uint32_t pid;
-    struct proc *procp;
     long total_vm;
+    long tasksize = 0;
     static bool retry_eligible = false;
     struct timespec curr_tm;
     static struct timespec last_traverse_time;
@@ -2438,12 +2446,12 @@ static void proc_get_script(void)
 	    clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
 	    if (get_time_diff_ms(&last_traverse_time, &curr_tm) <
 			    PSI_PROC_TRAVERSE_DELAY_MS)
-		    return;
+		    return 0;
     }
 repeat:
     if (!d && !(d = opendir("/proc"))) {
         ALOGE("Failed to open /proc");
-        return;
+        return 0;
     }
 
     while ((de = readdir(d))) {
@@ -2482,24 +2490,22 @@ repeat:
         if (oomadj < 0)
             continue;
 
-        procp = pid_lookup(pid);
-        if (!procp) {
-            procp = static_cast<struct proc *>(malloc(sizeof(*procp)));
-            if (!procp)
-                break;
+        tasksize = proc_get_size(pid);
+        if (tasksize <= 0)
+            continue;
 
-            procp->pid = pid;
-            procp->pidfd = -1;
-            procp->uid = 0;
-            procp->oomadj = oomadj;
-            proc_insert(procp);
-	    retry_eligible = true;
-	    check_time = false;
-	    ALOGI("proc_get_script: Added a task to kill list");
-	    return;
+        retry_eligible = true;
+        check_time = false;
+        r = kill(pid, SIGKILL);
+        if (r) {
+            ALOGE("kill(%d): errno=%d", pid, errno);
+            tasksize = 0;
         } else {
-            ALOGD("Entry already exists %d: %s\n", procp->pid, proc_get_name(pid, path, sizeof(path)));
+            ULMK_LOG(I, "Kill native with pid %u, oom_adj %d, to free %ld pages",
+                            pid, oomadj, tasksize);
         }
+
+        return tasksize;
     }
     closedir(d);
     d = NULL;
@@ -2509,7 +2515,9 @@ repeat:
     }
     check_time = true;
     clock_gettime(CLOCK_MONOTONIC_COARSE, &last_traverse_time);
-    ALOGI("proc_get_script: None tasks are added to kill list");
+    ALOGI("proc_get_script: No tasks are found to kill");
+
+    return 0;
 }
 
 static bool is_kill_pending(void) {
@@ -2712,10 +2720,8 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
                                  struct wakeup_info *wi, struct timespec *tm) {
     int i;
     int killed_size = 0;
-    bool can_retry = true;
     bool lmk_state_change_start = false;
 
-retry:
     for (i = OOM_SCORE_ADJ_MAX; i >= min_score_adj; i--) {
         struct proc *procp;
 
@@ -2742,10 +2748,8 @@ retry:
         }
     }
 
-    if (!killed_size && !min_score_adj && can_retry) {
-        proc_get_script();
-        can_retry = false;
-        goto retry;
+    if (!killed_size && !min_score_adj) {
+        killed_size = proc_get_script();
     }
 
     if (lmk_state_change_start) {
@@ -2759,7 +2763,7 @@ static int64_t get_memory_usage(struct reread_data *file_data) {
     int64_t mem_usage;
     char *buf;
 
-    if (access(file_data->filename, F_OK)) {
+    if ((file_data->fd == -1) && access(file_data->filename, F_OK)) {
         return -1;
     }
 
