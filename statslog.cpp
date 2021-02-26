@@ -34,7 +34,7 @@
 #define STRINGIFY(x) STRINGIFY_INTERNAL(x)
 #define STRINGIFY_INTERNAL(x) #x
 
-static bool enable_stats_log = property_get_bool("ro.lmk.log_stats", false);
+static bool enable_stats_log = property_get_bool("ro.lmk.log_stats", true);
 
 struct proc {
     int pid;
