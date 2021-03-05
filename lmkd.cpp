@@ -2163,12 +2163,21 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
+    bool choose_heaviest_task = kill_heaviest_task;
 
     for (i = OOM_SCORE_ADJ_MAX; i >= min_score_adj; i--) {
         struct proc *procp;
 
+        if (!choose_heaviest_task && i <= PERCEPTIBLE_APP_ADJ) {
+            /*
+             * If we have to choose a perceptible process, choose the heaviest one to
+             * hopefully minimize the number of victims.
+             */
+            choose_heaviest_task = true;
+        }
+
         while (true) {
-            procp = kill_heaviest_task ?
+            procp = choose_heaviest_task ?
                 proc_get_heaviest(i) : proc_adj_lru(i);
 
             if (!procp)
