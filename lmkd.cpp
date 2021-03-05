@@ -1873,7 +1873,6 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, procp->oomadj);
     android_log_write_int32(ctx, min_oom_score);
     android_log_write_int32(ctx, (int32_t)min(rss_kb, INT32_MAX));
-    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
     android_log_write_int32(ctx, kill_reason);
 
     /* log meminfo fields */
@@ -1886,6 +1885,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
     android_log_write_int32(ctx, wi->wakeups_since_event);
     android_log_write_int32(ctx, wi->skipped_wakeups);
+    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
