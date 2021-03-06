@@ -1873,7 +1873,6 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, procp->oomadj);
     android_log_write_int32(ctx, min_oom_score);
     android_log_write_int32(ctx, (int32_t)min(rss_kb, INT32_MAX));
-    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
     android_log_write_int32(ctx, kill_reason);
 
     /* log meminfo fields */
@@ -1886,6 +1885,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
     android_log_write_int32(ctx, wi->wakeups_since_event);
     android_log_write_int32(ctx, wi->skipped_wakeups);
+    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
@@ -2163,12 +2163,21 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
+    bool choose_heaviest_task = kill_heaviest_task;
 
     for (i = OOM_SCORE_ADJ_MAX; i >= min_score_adj; i--) {
         struct proc *procp;
 
+        if (!choose_heaviest_task && i <= PERCEPTIBLE_APP_ADJ) {
+            /*
+             * If we have to choose a perceptible process, choose the heaviest one to
+             * hopefully minimize the number of victims.
+             */
+            choose_heaviest_task = true;
+        }
+
         while (true) {
-            procp = kill_heaviest_task ?
+            procp = choose_heaviest_task ?
                 proc_get_heaviest(i) : proc_adj_lru(i);
 
             if (!procp)
@@ -2508,7 +2517,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         /* Both free memory and swap are low */
         kill_reason = LOW_MEM_AND_SWAP;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap is low (%"
-            PRId64 "kB < %" PRId64 "kB)", wmark > WMARK_LOW ? "min" : "low",
+            PRId64 "kB < %" PRId64 "kB)", wmark < WMARK_LOW ? "min" : "low",
             mi.field.free_swap * page_k, swap_low_threshold * page_k);
         /* Do not kill perceptible apps unless below min watermark */
         if (wmark > WMARK_MIN) {
@@ -2522,13 +2531,13 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = LOW_MEM_AND_SWAP_UTIL;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap utilization"
-            " is high (%d%% > %d%%)", wmark > WMARK_LOW ? "min" : "low",
+            " is high (%d%% > %d%%)", wmark < WMARK_LOW ? "min" : "low",
             swap_util, swap_util_max);
     } else if (wmark < WMARK_HIGH && thrashing > thrashing_limit) {
         /* Page cache is thrashing while memory is low */
         kill_reason = LOW_MEM_AND_THRASHING;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and thrashing (%"
-            PRId64 "%%)", wmark > WMARK_LOW ? "min" : "low", thrashing);
+            PRId64 "%%)", wmark < WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps because of thrashing */
         min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
