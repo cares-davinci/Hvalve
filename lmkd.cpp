@@ -2033,7 +2033,7 @@ static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason,
 }
 
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
-                         int kill_reason, union meminfo *mi,
+                         int swap_kb, int kill_reason, union meminfo *mi,
                          struct wakeup_info *wi, struct timespec *tm) {
     /* log process information */
     android_log_write_int32(ctx, procp->pid);
@@ -2053,6 +2053,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
     android_log_write_int32(ctx, wi->wakeups_since_event);
     android_log_write_int32(ctx, wi->skipped_wakeups);
+    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
@@ -2674,14 +2675,14 @@ static int kill_one_process(struct proc* procp, int min_oom_score, enum kill_rea
 
     inc_killcnt(procp->oomadj);
 
-    killinfo_log(procp, min_oom_score, rss_kb, kill_reason, mi, wi, tm);
+    killinfo_log(procp, min_oom_score, rss_kb, swap_kb, kill_reason, mi, wi, tm);
 
     if (kill_desc) {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %" PRId64 "kB; reason: %s", taskname, pid,
-              uid, procp->oomadj, rss_kb, kill_desc);
+        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
+              "kB swap; reason: %s", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb, kill_desc);
     } else {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_adj %d to free %" PRId64 "kB", taskname, pid,
-              uid, procp->oomadj, rss_kb);
+        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
+              "kb swap", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb);
     }
 
     kill_st.uid = static_cast<int32_t>(uid);
@@ -2707,7 +2708,7 @@ out:
 }
 
 /*
- * Find one process to kill at or above the given oom_adj level.
+ * Find one process to kill at or above the given oom_score_adj level.
  * Returns size of the killed process.
  */
 static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reason,
@@ -2717,13 +2718,22 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
     int killed_size = 0;
     bool can_retry = true;
     bool lmk_state_change_start = false;
+    bool choose_heaviest_task = kill_heaviest_task;
 
 retry:
     for (i = OOM_SCORE_ADJ_MAX; i >= min_score_adj; i--) {
         struct proc *procp;
 
+        if (!choose_heaviest_task && i <= PERCEPTIBLE_APP_ADJ) {
+            /*
+             * If we have to choose a perceptible process, choose the heaviest one to
+             * hopefully minimize the number of victims.
+             */
+            choose_heaviest_task = true;
+        }
+
         while (true) {
-            procp = kill_heaviest_task ?
+            procp = choose_heaviest_task ?
                 proc_get_heaviest(i) : proc_adj_lru(i);
 
             if (!procp)
@@ -3228,7 +3238,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = LOW_MEM_AND_SWAP_UTIL;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and swap utilization"
-            " is high (%d%% > %d%%)", wmark > WMARK_LOW ? "min" : "low",
+            " is high (%d%% > %d%%)", wmark < WMARK_LOW ? "min" : "low",
             swap_util, swap_util_max);
     } else if (wmark <= WMARK_HIGH && thrashing > thrashing_limit) {
         /* Page cache is thrashing while memory is low */
@@ -3619,15 +3629,14 @@ do_kill:
 
         /* Log whenever we kill or when report rate limit allows */
         if (use_minfree_levels) {
-            ALOGI("Reclaimed %ldkB, cache(%ldkB) and "
-                "free(%" PRId64 "kB)-reserved(%" PRId64 "kB) below min(%ldkB) for oom_adj %d",
+            ALOGI("Reclaimed %ldkB, cache(%ldkB) and free(%" PRId64 "kB)-reserved(%" PRId64 "kB) "
+                "below min(%ldkB) for oom_score_adj %d",
                 pages_freed * page_k,
                 other_file * page_k, mi.field.nr_free_pages * page_k,
                 zi.totalreserve_pages * page_k,
                 minfree * page_k, min_score_adj);
         } else {
-            ALOGI("Reclaimed %ldkB at oom_adj %d",
-                pages_freed * page_k, min_score_adj);
+            ALOGI("Reclaimed %ldkB at oom_score_adj %d", pages_freed * page_k, min_score_adj);
         }
 
         if (report_skip_count > 0) {
