@@ -498,6 +498,7 @@ enum vmstat_field {
     VS_PGSCAN_DIRECT_THROTTLE,
     VS_PGSKIP_FIRST_ZONE,
     VS_PGSKIP_DMA = VS_PGSKIP_FIRST_ZONE,
+    VS_PGSKIP_DMA32,
     VS_PGSKIP_NORMAL,
     VS_PGSKIP_HIGH,
     VS_PGSKIP_MOVABLE,
@@ -517,6 +518,7 @@ static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "pgscan_kswapd",
     "pgscan_direct",
     "pgscan_direct_throttle",
+    "pgskip_dma",
     "pgskip_dma32",
     "pgskip_normal",
     "pgskip_high",
@@ -535,6 +537,7 @@ union vmstat {
         int64_t pgscan_direct;
         int64_t pgscan_direct_throttle;
         int64_t pgskip_dma;
+        int64_t pgskip_dma32;
         int64_t pgskip_normal;
         int64_t pgskip_high;
         int64_t pgskip_movable;
@@ -1986,6 +1989,7 @@ static int vmstat_parse(union vmstat *vs) {
     char *buf;
     char *save_ptr;
     char *line;
+    int i;
 
     memset(vs, 0, sizeof(union vmstat));
 
@@ -1994,7 +1998,8 @@ static int vmstat_parse(union vmstat *vs) {
      * If exist, they can be overridden. This change helps
      * us to check which all zone info we can look into.
      */
-    vs->field.pgskip_dma = vs->field.pgskip_high = -EINVAL;
+    for (i = VS_PGSKIP_FIRST_ZONE; i <= VS_PGSKIP_LAST_ZONE; i++)
+        vs->arr[i] = -EINVAL;
     if ((buf = reread_file(&file_data)) == NULL) {
         return -1;
     }
@@ -2970,9 +2975,10 @@ static void fill_log_pgskip_stats(union vmstat *vs, int64_t *init_pgskip, int64_
     }
 
     if (debug_process_killing) {
-        ULMK_LOG(D, "pgskip deltas: DMA: %" PRId64 " Normal: %" PRId64 " High: %"
+        ULMK_LOG(D, "pgskip deltas: DMA: %" PRId64 "DMA32: %" PRId64 " Normal: %" PRId64 " High: %"
              PRId64 " Movable: %" PRId64,
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_DMA)],
+             pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_DMA32)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_NORMAL)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_HIGH)],
              pgskip_deltas[PGSKIP_IDX(VS_PGSKIP_MOVABLE)]);
