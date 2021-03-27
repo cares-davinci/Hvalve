@@ -1099,8 +1099,9 @@ static long proc_get_rss(int pid) {
     /* gid containing AID_READPROC required */
     snprintf(path, PATH_MAX, "/proc/%d/statm", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1)
+    if (fd == -1) {
         return -1;
+    }
 
     ret = read_all(fd, line, sizeof(line) - 1);
     if (ret < 0) {
@@ -1115,8 +1116,9 @@ static long proc_get_rss(int pid) {
 
 static bool parse_vmswap(char *buf, long *data) {
 
-    if (sscanf(buf, "VmSwap: %ld", data) == 1)
+    if (sscanf(buf, "VmSwap: %ld", data) == 1) {
         return 1;
+    }
 
     return 0;
 }
@@ -1131,8 +1133,9 @@ static long proc_get_swap(int pid) {
 
     snprintf(path, PATH_MAX, "/proc/%d/status", pid);
     fd = open(path,  O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
+    if (fd < 0) {
         return 0;
+    }
 
     ret = read_all(fd, buf, sizeof(buf) - 1);
     if (ret < 0) {
@@ -1143,8 +1146,9 @@ static long proc_get_swap(int pid) {
 
     for(c = strtok_r(buf, "\n", &save_ptr); c;
         c = strtok_r(NULL, "\n", &save_ptr)) {
-        if (parse_vmswap(c, &data))
+        if (parse_vmswap(c, &data)){
             goto out;
+        }
     }
 
     ALOGE("Couldn't get Swap info. Is it kthread?");
@@ -1172,8 +1176,9 @@ static long proc_get_vm(int pid) {
     /* gid containing AID_READPROC required */
     snprintf(path, PATH_MAX, "/proc/%d/statm", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1)
+    if (fd == -1) {
         return -1;
+    }
 
     ret = read_all(fd, line, sizeof(line) - 1);
     if (ret < 0) {
@@ -2084,8 +2089,9 @@ static char *nextln(char *buf)
     char *x;
 
     x = static_cast<char*>(memchr(buf, '\n', strlen(buf)));
-    if (!x)
+    if (!x) {
         return buf + strlen(buf);
+    }
     return x + 1;
 }
 
@@ -2211,8 +2217,9 @@ int nr_file)
      * A corner case is where file_cache = 0 in the allowed zones
      * which is a very rare scenario.
      */
-    if (!nr_file)
+    if (!nr_file) {
         goto out;
+    }
 
     for (i = 0; i < lowmem_targets_size; i++) {
         minfree = lowmem_minfree[i];
@@ -2246,10 +2253,12 @@ out:
      * If event is upgraded, just allow one kill in that window. This
      * is to avoid the aggressiveness of kills by upgrading the event.
      */
-    if (s_crit_event_upgraded)
+    if (s_crit_event_upgraded) {
         s_crit_event_upgraded = s_crit_event = false;
-    if (debug_process_killing)
+    }
+    if (debug_process_killing) {
         ULMK_LOG(E, "adj:%d file_cache: %d\n", min_score_adj, nr_file);
+    }
     return min_score_adj;
 }
 
@@ -2282,12 +2291,14 @@ static int zone_watermarks_ok(enum vmpressure_level level)
     /* Parse complete zone info. */
     for (zone_id = 0; zone_id < MAX_NR_ZONES; zone_id++, present_zones++) {
         nr = parse_one_zone_watermark(offset, &w[zone_id]);
-        if (!nr)
+        if (!nr) {
             break;
+        }
         offset += nr;
     }
-    if (!present_zones)
+    if (!present_zones) {
         goto out;
+    }
 
     if (vmstat_parse(&vs1) < 0) {
         ULMK_LOG(E, "Failed to parse vmstat!");
@@ -2296,14 +2307,16 @@ static int zone_watermarks_ok(enum vmpressure_level level)
 
     for (zone_id = 0, i = VS_PGSKIP_FIRST_ZONE;
             i <= VS_PGSKIP_LAST_ZONE && zone_id < present_zones; ++i) {
-        if (vs1.arr[i] == -EINVAL)
+        if (vs1.arr[i] == -EINVAL) {
             continue;
+        }
         /*
          * If no page is skipped while reclaiming, then consider this
          * zone file cache stats.
          */
-        if (!(vs1.arr[i] - vs2.arr[i]))
+        if (!(vs1.arr[i] - vs2.arr[i])) {
             nr_file += w[zone_id].inactive_file + w[zone_id].active_file;
+        }
 
         ++zone_id;
     }
@@ -2323,23 +2336,27 @@ static int zone_watermarks_ok(enum vmpressure_level level)
         }
 
         /* Zone is empty */
-        if (!w[zone_id].present)
+        if (!w[zone_id].present) {
             continue;
+        }
 
         margin = w[zone_id].free - w[zone_id].cma - w[zone_id].high;
         for (i = 0; i < present_zones; i++)
-            if (w[zone_id].lowmem_reserve[i] && (margin > w[zone_id].lowmem_reserve[i]))
+            if (w[zone_id].lowmem_reserve[i] && (margin > w[zone_id].lowmem_reserve[i])) {
                 lowmem_reserve_ok[i] = true;
+            }
 
-        if (!s_crit_event && (margin >= 0 || lowmem_reserve_ok[zone_id]))
+        if (!s_crit_event && (margin >= 0 || lowmem_reserve_ok[zone_id])) {
             continue;
+        }
 
         return file_cache_to_adj(level, w[zone_id].free, nr_file);
     }
 
 out:
-    if (offset == buf)
+    if (offset == buf) {
         ALOGE("Parsing watermarks failed in %s", file_data.filename);
+    }
 
     return min_score_adj;
 }
@@ -2451,8 +2468,9 @@ static long proc_get_script(void)
     if (check_time) {
         clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
         if (get_time_diff_ms(&last_traverse_time, &curr_tm) <
-                PSI_PROC_TRAVERSE_DELAY_MS)
+                PSI_PROC_TRAVERSE_DELAY_MS) {
             return 0;
+        }
     }
 repeat:
     if (!d && !(d = opendir("/proc"))) {
@@ -2461,30 +2479,35 @@ repeat:
     }
 
     while ((de = readdir(d))) {
-        if (sscanf(de->d_name, "%u", &pid) != 1)
+        if (sscanf(de->d_name, "%u", &pid) != 1) {
             continue;
+        }
 
         /* Don't attempt to kill init */
-        if (pid == 1)
+        if (pid == 1) {
             continue;
+        }
 
         /*
      * Don't attempt to kill kthreads. Rely on total_vm for this.
      */
         total_vm = proc_get_vm(pid);
-        if (total_vm <= 0)
+        if (total_vm <= 0) {
             continue;
+        }
 
         snprintf(path, sizeof(path), "/proc/%u/oom_score_adj", pid);
         fd = open(path, O_RDONLY | O_CLOEXEC);
-        if (fd < 0)
+        if (fd < 0) {
             continue;
+        }
 
         len = read_all(fd, line, sizeof(line) - 1);
         close(fd);
 
-        if (len < 0)
+        if (len < 0) {
             continue;
+        }
 
         line[LINE_MAX - 1] = '\0';
 
@@ -2493,12 +2516,14 @@ repeat:
             continue;
         }
 
-        if (oomadj < 0)
+        if (oomadj < 0) {
             continue;
+        }
 
         tasksize = proc_get_size(pid);
-        if (tasksize <= 0)
+        if (tasksize <= 0) {
             continue;
+        }
 
         retry_eligible = true;
         check_time = false;
@@ -3215,8 +3240,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     wmark = get_lowest_watermark(&mi, &zone_mem_info);
     log_meminfo(&mi, wmark);
     if (level < VMPRESS_LEVEL_CRITICAL && (reclaim == DIRECT_RECLAIM ||
-            reclaim == DIRECT_RECLAIM_THROTTLE))
+            reclaim == DIRECT_RECLAIM_THROTTLE)) {
         last_event_upgraded = true;
+    }
 
     /*
      * TODO: move this logic into a separate function
@@ -3401,12 +3427,14 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
                     if (count_upgraded_event >= 4) {
                         count_upgraded_event = 0;
                         s_crit_event = true;
-                        if (debug_process_killing)
+                        if (debug_process_killing) {
                             ULMK_LOG(D, "Medium/Critical is permanently upgraded to Supercritical event\n");
+                        }
                     } else {
                         s_crit_event = s_crit_event_upgraded = true;
-                        if (debug_process_killing)
+                        if (debug_process_killing) {
                             ULMK_LOG(D, "Medium/Critical is upgraded to Supercritical event\n");
+                        }
                     }
                     s_crit_base = current;
                 }
@@ -3445,8 +3473,9 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     };
     static struct wakeup_info wi;
 
-    if (!s_crit_event)
+    if (!s_crit_event) {
         level = upgrade_vmpressure_event(level);
+    }
 
     if (debug_process_killing) {
         ALOGI("%s memory pressure event is triggered", level_name[level]);
@@ -3496,8 +3525,9 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
                             s_crit_base.field.pgscan_direct_throttle;
                 sync = s_crit_current.field.pgscan_direct -
                         s_crit_base.field.pgscan_direct;
-                if (!throttle && !sync)
+                if (!throttle && !sync) {
                     s_crit_event = false;
+                }
                 s_crit_base = s_crit_current;
             }
         }
@@ -3665,8 +3695,7 @@ do_kill:
                 min_score_adj = level_oomadj[level];
             } else {
                 min_score_adj = zone_watermarks_ok(level);
-                if (min_score_adj == OOM_SCORE_ADJ_MAX + 1)
-                {
+                if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
                     ULMK_LOG(I, "Ignoring pressure since per-zone watermarks ok");
                     return;
                 }
@@ -3760,8 +3789,9 @@ static bool init_psi_monitors() {
      */
     bool use_new_strategy =
         property_get_bool("ro.lmk.use_new_strategy", low_ram_device || !use_minfree_levels);
-    if (force_use_old_strategy)
+    if (force_use_old_strategy) {
         use_new_strategy = false;
+    }
 
     /* In default PSI mode override stall amounts using system properties */
     if (use_new_strategy) {
@@ -3943,8 +3973,9 @@ static void update_psi_window_size() {
      * Ensure min polling period for supercritical event is no less than
      * PSI_POLL_PERIOD_SHORT_MS.
      */
-    if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_SHORT_MS)
+    if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_SHORT_MS) {
         psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
+    }
 }
 
 static int init(void) {
@@ -4112,12 +4143,14 @@ static bool have_psi_events(struct epoll_event *evt, int nevents)
     struct event_handler_info* handler_info;
 
     for (i = 0; i < nevents; i++, evt++) {
-        if (evt->events & (EPOLLERR | EPOLLHUP))
+        if (evt->events & (EPOLLERR | EPOLLHUP)) {
             continue;
+        }
         if (evt->data.ptr) {
             handler_info = (struct event_handler_info*)evt->data.ptr;
-            if (handler_info->handler == mp_event_common)
+            if (handler_info->handler == mp_event_common) {
                 return true;
+            }
         }
     }
 
@@ -4206,13 +4239,15 @@ static void mainloop(void) {
                         if ((nevents > 0 && have_psi_events(events, nevents)) ||
                             (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
                             !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
-                            !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle)))
+                            !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle))) {
                             skip_call_handler = true;
+                        }
                         poll1 = poll2;
                     }
                 }
-                if (!skip_call_handler)
+                if (!skip_call_handler) {
                     call_handler(poll_params.poll_handler, &poll_params, 0);
+                }
             }
         } else {
             if (kill_timeout_ms && is_waiting_for_kill()) {
@@ -4345,8 +4380,9 @@ static void update_perf_props() {
     PropVal (*perf_get_prop)(const char *, const char *) = NULL;
     void *handle = NULL;
     handle = dlopen(PERFD_LIB, RTLD_NOW);
-    if (handle != NULL)
+    if (handle != NULL) {
         perf_get_prop = (PropVal (*)(const char *, const char *))dlsym(handle, "perf_get_prop");
+    }
 
     if (!perf_get_prop) {
         ALOGE("Couldn't get perf_get_prop function handle.");
