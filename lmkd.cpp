@@ -1115,51 +1115,51 @@ static long proc_get_rss(int pid) {
 
 static bool parse_vmswap(char *buf, long *data) {
 
-	if(sscanf(buf, "VmSwap: %ld", data) == 1)
-		return 1;
+    if (sscanf(buf, "VmSwap: %ld", data) == 1)
+        return 1;
 
-	return 0;
+    return 0;
 }
 
 static long proc_get_swap(int pid) {
-	static char buf[PAGE_SIZE] = {0, };
-	static char path[PATH_MAX] = {0, };
-	ssize_t ret;
-	char *c, *save_ptr;
-	int fd;
-	long data;
+    static char buf[PAGE_SIZE] = {0, };
+    static char path[PATH_MAX] = {0, };
+    ssize_t ret;
+    char *c, *save_ptr;
+    int fd;
+    long data;
 
-	snprintf(path, PATH_MAX, "/proc/%d/status", pid);
-	fd = open(path,  O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return 0;
+    snprintf(path, PATH_MAX, "/proc/%d/status", pid);
+    fd = open(path,  O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return 0;
 
-	ret = read_all(fd, buf, sizeof(buf) - 1);
-	if (ret < 0) {
-		ALOGE("unable to read Vm status");
-		data = 0;
-		goto out;
-	}
+    ret = read_all(fd, buf, sizeof(buf) - 1);
+    if (ret < 0) {
+        ALOGE("unable to read Vm status");
+        data = 0;
+        goto out;
+    }
 
-	for(c = strtok_r(buf, "\n", &save_ptr); c;
-		c = strtok_r(NULL, "\n", &save_ptr)) {
-		if (parse_vmswap(c, &data))
-			goto out;
-	}
+    for(c = strtok_r(buf, "\n", &save_ptr); c;
+        c = strtok_r(NULL, "\n", &save_ptr)) {
+        if (parse_vmswap(c, &data))
+            goto out;
+    }
 
-	ALOGE("Couldn't get Swap info. Is it kthread?");
-	data = 0;
+    ALOGE("Couldn't get Swap info. Is it kthread?");
+    data = 0;
 out:
-	close(fd);
-	/* Vmswap is in Kb. Convert to page size. */
-	return (data >> 2);
+    close(fd);
+    /* Vmswap is in Kb. Convert to page size. */
+    return (data >> 2);
 }
 
 static long proc_get_size(int pid)
 {
-	long size;
+    long size;
 
-	return (size = proc_get_rss(pid)) ? size : proc_get_swap(pid);
+    return (size = proc_get_rss(pid)) ? size : proc_get_swap(pid);
 }
 
 static long proc_get_vm(int pid) {
@@ -2247,7 +2247,7 @@ out:
      * is to avoid the aggressiveness of kills by upgrading the event.
      */
     if (s_crit_event_upgraded)
-	    s_crit_event_upgraded = s_crit_event = false;
+        s_crit_event_upgraded = s_crit_event = false;
     if (debug_process_killing)
         ULMK_LOG(E, "adj:%d file_cache: %d\n", min_score_adj, nr_file);
     return min_score_adj;
@@ -2448,11 +2448,11 @@ static long proc_get_script(void)
     static struct timespec last_traverse_time;
     static bool check_time = false;
 
-    if(check_time) {
-	    clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
-	    if (get_time_diff_ms(&last_traverse_time, &curr_tm) <
-			    PSI_PROC_TRAVERSE_DELAY_MS)
-		    return 0;
+    if (check_time) {
+        clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+        if (get_time_diff_ms(&last_traverse_time, &curr_tm) <
+                PSI_PROC_TRAVERSE_DELAY_MS)
+            return 0;
     }
 repeat:
     if (!d && !(d = opendir("/proc"))) {
@@ -2469,8 +2469,8 @@ repeat:
             continue;
 
         /*
-	 * Don't attempt to kill kthreads. Rely on total_vm for this.
-	 */
+     * Don't attempt to kill kthreads. Rely on total_vm for this.
+     */
         total_vm = proc_get_vm(pid);
         if (total_vm <= 0)
             continue;
@@ -2516,8 +2516,8 @@ repeat:
     closedir(d);
     d = NULL;
     if (retry_eligible) {
-	    retry_eligible = false;
-	    goto repeat;
+        retry_eligible = false;
+        goto repeat;
     }
     check_time = true;
     clock_gettime(CLOCK_MONOTONIC_COARSE, &last_traverse_time);
@@ -3391,28 +3391,26 @@ enum vmpressure_level upgrade_vmpressure_event(enum vmpressure_level level)
             }
             throttle = current.field.pgscan_direct_throttle -
                     base.field.pgscan_direct_throttle;
-	    sync += (current.field.pgscan_direct -
-		     base.field.pgscan_direct);
-	    async += (current.field.pgscan_kswapd -
-		      base.field.pgscan_kswapd);
-	    /* Here scan window size is put at default 4MB(=1024 pages). */
-	    if (throttle || (sync + async) >= reclaim_scan_threshold) {
-		    pressure = ((100 * sync)/(sync + async + 1));
-		    if (throttle || (pressure >= direct_reclaim_pressure)) {
-			    last_event_upgraded = true;
-			    if (count_upgraded_event >= 4) {
-				    count_upgraded_event = 0;
-				    s_crit_event = true;
-				    if (debug_process_killing)
-					    ULMK_LOG(D, "Medium/Critical is permanently upgraded to Supercritical event\n");
-			    } else {
-				    s_crit_event = s_crit_event_upgraded = true;
-				    if (debug_process_killing)
-					    ULMK_LOG(D, "Medium/Critical is upgraded to Supercritical event\n");
-			    }
-			    s_crit_base = current;
-		    }
-		    sync = async = 0;
+            sync += (current.field.pgscan_direct - base.field.pgscan_direct);
+            async += (current.field.pgscan_kswapd - base.field.pgscan_kswapd);
+            /* Here scan window size is put at default 4MB(=1024 pages). */
+            if (throttle || (sync + async) >= reclaim_scan_threshold) {
+                pressure = ((100 * sync)/(sync + async + 1));
+                if (throttle || (pressure >= direct_reclaim_pressure)) {
+                    last_event_upgraded = true;
+                    if (count_upgraded_event >= 4) {
+                        count_upgraded_event = 0;
+                        s_crit_event = true;
+                        if (debug_process_killing)
+                            ULMK_LOG(D, "Medium/Critical is permanently upgraded to Supercritical event\n");
+                    } else {
+                        s_crit_event = s_crit_event_upgraded = true;
+                        if (debug_process_killing)
+                            ULMK_LOG(D, "Medium/Critical is upgraded to Supercritical event\n");
+                    }
+                    s_crit_base = current;
+                }
+                sync = async = 0;
             }
             base = current;
             break;
@@ -3484,7 +3482,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         if (events) {
             if (data == VMPRESS_LEVEL_SUPER_CRITICAL) {
                 s_crit_event = true;
-		poll_params->polling_interval_ms = psi_poll_period_scrit_ms;
+                poll_params->polling_interval_ms = psi_poll_period_scrit_ms;
                 vmstat_parse(&s_crit_base);
             }
             else if (s_crit_event) {
@@ -3763,7 +3761,7 @@ static bool init_psi_monitors() {
     bool use_new_strategy =
         property_get_bool("ro.lmk.use_new_strategy", low_ram_device || !use_minfree_levels);
     if (force_use_old_strategy)
-	    use_new_strategy = false;
+        use_new_strategy = false;
 
     /* In default PSI mode override stall amounts using system properties */
     if (use_new_strategy) {
@@ -3924,29 +3922,29 @@ static void update_psi_window_size() {
     union meminfo info;
 
     if (force_use_old_strategy) {
-	    if (!meminfo_parse(&info)) {
-		    /*
-		     * Set the optimal settings for lowram targets.
-		     */
-		    if (info.field.nr_total_pages < (int64_t)(SZ_4G / PAGE_SIZE)) {
-			    if (psi_window_size_ms > 500) {
-				    psi_window_size_ms = 500;
-				    ULMK_LOG(I, "PSI window size is changed to %dms\n", psi_window_size_ms);
-			    }
-			    if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_LONG_MS) {
-				    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_LONG_MS;
-				    ULMK_LOG(I, "PSI poll period for super critical event is changed to %dms\n",psi_poll_period_scrit_ms);
-			    }
-		    }
-	    } else
-		    ULMK_LOG(E, "Failed to parse the meminfo\n");
+        if (!meminfo_parse(&info)) {
+            /*
+             * Set the optimal settings for lowram targets.
+             */
+            if (info.field.nr_total_pages < (int64_t)(SZ_4G / PAGE_SIZE)) {
+                if (psi_window_size_ms > 500) {
+                    psi_window_size_ms = 500;
+                    ULMK_LOG(I, "PSI window size is changed to %dms\n", psi_window_size_ms);
+                }
+                if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_LONG_MS) {
+                    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_LONG_MS;
+                    ULMK_LOG(I, "PSI poll period for super critical event is changed to %dms\n",psi_poll_period_scrit_ms);
+                }
+            }
+        } else
+            ULMK_LOG(E, "Failed to parse the meminfo\n");
     }
     /*
      * Ensure min polling period for supercritical event is no less than
      * PSI_POLL_PERIOD_SHORT_MS.
      */
     if (psi_poll_period_scrit_ms < PSI_POLL_PERIOD_SHORT_MS)
-	    psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
+        psi_poll_period_scrit_ms = PSI_POLL_PERIOD_SHORT_MS;
 }
 
 static int init(void) {
@@ -4110,54 +4108,54 @@ static void call_handler(struct event_handler_info* handler_info,
 
 static bool have_psi_events(struct epoll_event *evt, int nevents)
 {
-	int i;
-	struct event_handler_info* handler_info;
+    int i;
+    struct event_handler_info* handler_info;
 
-	for (i = 0; i < nevents; i++, evt++) {
-		if (evt->events & (EPOLLERR | EPOLLHUP))
-			continue;
-		if (evt->data.ptr) {
-			handler_info = (struct event_handler_info*)evt->data.ptr;
-			if (handler_info->handler == mp_event_common)
-				return true;
-		}
-	}
+    for (i = 0; i < nevents; i++, evt++) {
+        if (evt->events & (EPOLLERR | EPOLLHUP))
+            continue;
+        if (evt->data.ptr) {
+            handler_info = (struct event_handler_info*)evt->data.ptr;
+            if (handler_info->handler == mp_event_common)
+                return true;
+        }
+    }
 
-	return false;
+    return false;
 }
 
 static void check_cont_lmkd_events(int lvl)
 {
-	static struct timespec tmed, tcrit, tupgrad;
-	struct timespec now, prev;
+    static struct timespec tmed, tcrit, tupgrad;
+    struct timespec now, prev;
 
-	clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
 
-	if (lvl == VMPRESS_LEVEL_MEDIUM) {
-		prev = tmed;
-		tmed = now;
-	}else {
-		prev = tcrit;
-		tcrit = now;
-	}
+    if (lvl == VMPRESS_LEVEL_MEDIUM) {
+        prev = tmed;
+        tmed = now;
+    } else {
+        prev = tcrit;
+        tcrit = now;
+    }
 
-	/*
-	 * Consider it as contiguous if two successive medium/critical events fall
-	 * in window + 1/2(window) period.
-	 */
-	if (get_time_diff_ms(&prev, &now) < ((psi_window_size_ms * 3) >> 1)) {
-		if (get_time_diff_ms(&tupgrad, &now) > psi_window_size_ms) {
-			if (last_event_upgraded) {
-				count_upgraded_event++;
-				last_event_upgraded = false;
-				tupgrad = now;
-			} else {
-				count_upgraded_event = 0;
-			}
-		}
-	} else {
-		count_upgraded_event = 0;
-	}
+    /*
+     * Consider it as contiguous if two successive medium/critical events fall
+     * in window + 1/2(window) period.
+     */
+    if (get_time_diff_ms(&prev, &now) < ((psi_window_size_ms * 3) >> 1)) {
+        if (get_time_diff_ms(&tupgrad, &now) > psi_window_size_ms) {
+            if (last_event_upgraded) {
+                count_upgraded_event++;
+                last_event_upgraded = false;
+                tupgrad = now;
+            } else {
+                count_upgraded_event = 0;
+            }
+        }
+    } else {
+        count_upgraded_event = 0;
+    }
 }
 
 static void mainloop(void) {
@@ -4177,7 +4175,7 @@ static void mainloop(void) {
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int nevents;
         int i;
-	bool skip_call_handler = false;
+        bool skip_call_handler = false;
 
         if (poll_params.poll_handler) {
             bool poll_now;
@@ -4202,19 +4200,19 @@ static void mainloop(void) {
                     poll_params.polling_interval_ms);
             }
             if (poll_now) {
-		if (force_use_old_strategy) {
-			if (s_crit_event) {
-				vmstat_parse(&poll2);
-				if ((nevents > 0 && have_psi_events(events, nevents)) ||
-				    (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
-				    !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
-				    !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle)))
-					skip_call_handler = true;
-				poll1 = poll2;
-			}
-		}
-		if (!skip_call_handler)
-			call_handler(poll_params.poll_handler, &poll_params, 0);
+                if (force_use_old_strategy) {
+                    if (s_crit_event) {
+                        vmstat_parse(&poll2);
+                        if ((nevents > 0 && have_psi_events(events, nevents)) ||
+                            (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
+                            !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
+                            !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle)))
+                            skip_call_handler = true;
+                        poll1 = poll2;
+                    }
+                }
+                if (!skip_call_handler)
+                    call_handler(poll_params.poll_handler, &poll_params, 0);
             }
         } else {
             if (kill_timeout_ms && is_waiting_for_kill()) {
@@ -4339,121 +4337,131 @@ static void init_PreferredApps() {
 static void update_perf_props() {
 
     enable_watermark_check =
-        property_get_bool("ro.lmk.enable_watermark_check", false);
+    property_get_bool("ro.lmk.enable_watermark_check", false);
     enable_preferred_apps =
-        property_get_bool("ro.lmk.enable_preferred_apps", false);
+    property_get_bool("ro.lmk.enable_preferred_apps", false);
 
-     /* Loading the vendor library at runtime to access property value */
-     PropVal (*perf_get_prop)(const char *, const char *) = NULL;
-     void *handle = NULL;
-     handle = dlopen(PERFD_LIB, RTLD_NOW);
-     if (handle != NULL)
-         perf_get_prop = (PropVal (*)(const char *, const char *))dlsym(handle, "perf_get_prop");
+    /* Loading the vendor library at runtime to access property value */
+    PropVal (*perf_get_prop)(const char *, const char *) = NULL;
+    void *handle = NULL;
+    handle = dlopen(PERFD_LIB, RTLD_NOW);
+    if (handle != NULL)
+        perf_get_prop = (PropVal (*)(const char *, const char *))dlsym(handle, "perf_get_prop");
 
-     if(!perf_get_prop) {
-          ALOGE("Couldn't get perf_get_prop function handle.");
-     } else {
-          char property[PROPERTY_VALUE_MAX];
-          char default_value[PROPERTY_VALUE_MAX];
+    if (!perf_get_prop) {
+        ALOGE("Couldn't get perf_get_prop function handle.");
+    } else {
+        char property[PROPERTY_VALUE_MAX];
+        char default_value[PROPERTY_VALUE_MAX];
 
-          /*Currently only the following properties introduced by Google
-          *are used outside. Hence their names are mirrored to _dup
-          *If it doesnot get value via get_prop it will use the value
-          *set by Google by default. To use the properties mentioned
-          *above, same can be followed*/
-          strlcpy(default_value, (kill_heaviest_task)? "true" : "false", PROPERTY_VALUE_MAX);
-          strlcpy(property, perf_get_prop("ro.lmk.kill_heaviest_task_dup", default_value).value, PROPERTY_VALUE_MAX);
-          kill_heaviest_task = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        /*Currently only the following properties introduced by Google
+        *are used outside. Hence their names are mirrored to _dup
+        *If it doesnot get value via get_prop it will use the value
+        *set by Google by default. To use the properties mentioned
+        *above, same can be followed*/
+        strlcpy(default_value, (kill_heaviest_task)? "true" : "false", PROPERTY_VALUE_MAX);
+        strlcpy(property, perf_get_prop("ro.lmk.kill_heaviest_task_dup", default_value).value,
+            PROPERTY_VALUE_MAX);
+        kill_heaviest_task = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%lu", (kill_timeout_ms));
-          strlcpy(property, perf_get_prop("ro.lmk.kill_timeout_ms_dup", default_value).value, PROPERTY_VALUE_MAX);
-          kill_timeout_ms =  strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%lu", (kill_timeout_ms));
+        strlcpy(property, perf_get_prop("ro.lmk.kill_timeout_ms_dup", default_value).value,
+            PROPERTY_VALUE_MAX);
+        kill_timeout_ms =  strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d",
-                    level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL]);
-          strlcpy(property, perf_get_prop("ro.lmk.super_critical", default_value).value, PROPERTY_VALUE_MAX);
-          level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d",
+            level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL]);
+        strlcpy(property, perf_get_prop("ro.lmk.super_critical", default_value).value,
+            PROPERTY_VALUE_MAX);
+        level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
-          strlcpy(property, perf_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value, PROPERTY_VALUE_MAX);
-          direct_reclaim_pressure = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", direct_reclaim_pressure);
+        strlcpy(property, perf_get_prop("ro.lmk.direct_reclaim_pressure", default_value).value,
+            PROPERTY_VALUE_MAX);
+        direct_reclaim_pressure = strtod(property, NULL);
 
-	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_WINDOW_SIZE_MS);
-	  strlcpy(property, perf_get_prop("ro.lmk.psi_window_size_ms", default_value).value, PROPERTY_VALUE_MAX);
-	  psi_window_size_ms = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_WINDOW_SIZE_MS);
+        strlcpy(property, perf_get_prop("ro.lmk.psi_window_size_ms", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_window_size_ms = strtod(property, NULL);
 
-	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_SCRIT_COMPLETE_STALL_MS);
-	  strlcpy(property, perf_get_prop("ro.lmk.psi_scrit_complete_stall_ms", default_value).value, PROPERTY_VALUE_MAX);
-	  psi_thresholds[VMPRESS_LEVEL_SUPER_CRITICAL].threshold_ms = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_SCRIT_COMPLETE_STALL_MS);
+        strlcpy(property, perf_get_prop("ro.lmk.psi_scrit_complete_stall_ms", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_thresholds[VMPRESS_LEVEL_SUPER_CRITICAL].threshold_ms = strtod(property, NULL);
 
-	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_POLL_PERIOD_SHORT_MS);
-	  strlcpy(property, perf_get_prop("ro.lmk.psi_poll_period_scrit_ms", default_value).value, PROPERTY_VALUE_MAX);
-	  psi_poll_period_scrit_ms = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_POLL_PERIOD_SHORT_MS);
+        strlcpy(property, perf_get_prop("ro.lmk.psi_poll_period_scrit_ms", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_poll_period_scrit_ms = strtod(property, NULL);
 
-	  snprintf(default_value, PROPERTY_VALUE_MAX, "%d", reclaim_scan_threshold);
-	  strlcpy(property, perf_get_prop("ro.lmk.reclaim_scan_threshold", default_value).value, PROPERTY_VALUE_MAX);
-	  reclaim_scan_threshold = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", reclaim_scan_threshold);
+        strlcpy(property, perf_get_prop("ro.lmk.reclaim_scan_threshold", default_value).value,
+            PROPERTY_VALUE_MAX);
+        reclaim_scan_threshold = strtod(property, NULL);
 
-          strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
-          strlcpy(property, perf_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value, PROPERTY_VALUE_MAX);
-          use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(default_value, (use_minfree_levels)? "true" : "false", PROPERTY_VALUE_MAX);
+        strlcpy(property, perf_get_prop("ro.lmk.use_minfree_levels_dup", default_value).value,
+            PROPERTY_VALUE_MAX);
+        use_minfree_levels = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
-          strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
-          strlcpy(property, perf_get_prop("ro.lmk.use_new_strategy_dup", default_value).value, PROPERTY_VALUE_MAX);
-          force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(default_value, (force_use_old_strategy)? "true" : "false", PROPERTY_VALUE_MAX);
+        strlcpy(property, perf_get_prop("ro.lmk.use_new_strategy_dup", default_value).value,
+            PROPERTY_VALUE_MAX);
+        force_use_old_strategy = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_CONT_EVENT_THRESH);
-          strlcpy(property, perf_get_prop("ro.lmk.psi_cont_event_thresh", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          psi_cont_event_thresh = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", PSI_CONT_EVENT_THRESH);
+        strlcpy(property, perf_get_prop("ro.lmk.psi_cont_event_thresh", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_cont_event_thresh = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING);
-          strlcpy(property, perf_get_prop("ro.lmk.thrashing_threshold", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          thrashing_limit_pct = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING);
+        strlcpy(property, perf_get_prop("ro.lmk.thrashing_threshold", default_value).value,
+            PROPERTY_VALUE_MAX);
+        thrashing_limit_pct = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING_DECAY);
-          strlcpy(property, perf_get_prop("ro.lmk.thrashing_decay", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          thrashing_limit_decay_pct = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_THRASHING_DECAY);
+        strlcpy(property, perf_get_prop("ro.lmk.thrashing_decay", default_value).value,
+            PROPERTY_VALUE_MAX);
+        thrashing_limit_decay_pct = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_LOW_SWAP);
-          strlcpy(property, perf_get_prop("ro.lmk.nstrat_low_swap", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          swap_free_low_percentage = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", DEF_LOW_SWAP);
+        strlcpy(property, perf_get_prop("ro.lmk.nstrat_low_swap", default_value).value,
+            PROPERTY_VALUE_MAX);
+        swap_free_low_percentage = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_partial_stall_ms);
-          strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_partial_ms", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          psi_partial_stall_ms = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_partial_stall_ms);
+        strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_partial_ms", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_partial_stall_ms = strtod(property, NULL);
 
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_complete_stall_ms);
-          strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_complete_ms", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          psi_complete_stall_ms = strtod(property, NULL);
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", psi_complete_stall_ms);
+        strlcpy(property, perf_get_prop("ro.lmk.nstrat_psi_complete_ms", default_value).value,
+            PROPERTY_VALUE_MAX);
+        psi_complete_stall_ms = strtod(property, NULL);
 
-          /*The following properties are not intoduced by Google
-           *hence kept as it is */
-          strlcpy(property, perf_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
-          enhance_batch_kill = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_get_prop("ro.lmk.enable_adaptive_lmk", "false").value, PROPERTY_VALUE_MAX);
-          enable_adaptive_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_get_prop("ro.lmk.enable_userspace_lmk", "false").value, PROPERTY_VALUE_MAX);
-          enable_userspace_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_get_prop("ro.lmk.enable_watermark_check", "false").value, PROPERTY_VALUE_MAX);
-          enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
-          enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
-          snprintf(default_value, PROPERTY_VALUE_MAX, "%d", wmark_boost_factor);
-          strlcpy(property,
-                  perf_get_prop("ro.lmk.nstrat_wmark_boost_factor", default_value).value,
-                  PROPERTY_VALUE_MAX);
-          wmark_boost_factor = strtod(property, NULL);
-          wbf_effective = wmark_boost_factor;
+        /*The following properties are not intoduced by Google
+        *hence kept as it is */
+        strlcpy(property, perf_get_prop("ro.lmk.enhance_batch_kill", "true").value, PROPERTY_VALUE_MAX);
+        enhance_batch_kill = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(property, perf_get_prop("ro.lmk.enable_adaptive_lmk", "false").value, PROPERTY_VALUE_MAX);
+        enable_adaptive_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(property, perf_get_prop("ro.lmk.enable_userspace_lmk", "false").value, PROPERTY_VALUE_MAX);
+        enable_userspace_lmk = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(property, perf_get_prop("ro.lmk.enable_watermark_check", "false").value, PROPERTY_VALUE_MAX);
+        enable_watermark_check = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        strlcpy(property, perf_get_prop("ro.lmk.enable_preferred_apps", "false").value, PROPERTY_VALUE_MAX);
+        enable_preferred_apps = (!strncmp(property,"false",PROPERTY_VALUE_MAX))? false : true;
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%d", wmark_boost_factor);
+        strlcpy(property,
+            perf_get_prop("ro.lmk.nstrat_wmark_boost_factor", default_value).value,
+            PROPERTY_VALUE_MAX);
+        wmark_boost_factor = strtod(property, NULL);
+        wbf_effective = wmark_boost_factor;
 
-          //Update kernel interface during re-init.
-          use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
-          update_psi_window_size();
+        //Update kernel interface during re-init.
+        use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
+        update_psi_window_size();
     }
 
     /* Load IOP library for PApps */
