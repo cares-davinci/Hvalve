@@ -1157,9 +1157,10 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     } else {
         if (!claim_record(procp, cred->pid)) {
             char buf[LINE_MAX];
+            char *taskname = proc_get_name(cred->pid, buf, sizeof(buf));
             /* Only registrant of the record can remove it */
             ALOGE("%s (%d, %d) attempts to modify a process registered by another client",
-                proc_get_name(cred->pid, buf, sizeof(buf)), cred->uid, cred->pid);
+                taskname ? taskname : "A process ", cred->uid, cred->pid);
             return;
         }
         proc_unslot(procp);
@@ -1194,9 +1195,10 @@ static void cmd_procremove(LMKD_CTRL_PACKET packet, struct ucred *cred) {
 
     if (!claim_record(procp, cred->pid)) {
         char buf[LINE_MAX];
+        char *taskname = proc_get_name(cred->pid, buf, sizeof(buf));
         /* Only registrant of the record can remove it */
         ALOGE("%s (%d, %d) attempts to unregister a process registered by another client",
-            proc_get_name(cred->pid, buf, sizeof(buf)), cred->uid, cred->pid);
+            taskname ? taskname : "A process ", cred->uid, cred->pid);
         return;
     }
 
