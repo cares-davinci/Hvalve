@@ -260,7 +260,7 @@ void stats_remove_taskname(int pid) {
 }
 
 void stats_store_taskname(int pid, const char* taskname) {
-    if (!enable_stats_log) {
+    if (!enable_stats_log || !taskname) {
         return;
     }
 
