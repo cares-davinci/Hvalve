@@ -2376,7 +2376,7 @@ static struct proc *proc_get_heaviest(int oomadj) {
     while (curr != head) {
         int pid = ((struct proc *)curr)->pid;
         long tasksize = proc_get_size(pid);
-        if (tasksize <= 0) {
+        if (tasksize < 0) {
             struct adjslot_list *next = curr->next;
             pid_remove(pid);
             curr = next;
