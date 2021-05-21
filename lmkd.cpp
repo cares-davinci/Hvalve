@@ -88,7 +88,7 @@
 #define MEMINFO_PATH "/proc/meminfo"
 #define VMSTAT_PATH "/proc/vmstat"
 #define PROC_STATUS_TGID_FIELD "Tgid:"
-#define TRACE_MARKER_PATH "/sys/kernel/debug/tracing/trace_marker"
+#define TRACE_MARKER_PATH "/sys/kernel/tracing/trace_marker"
 #define PROC_STATUS_RSS_FIELD "VmRSS:"
 #define PROC_STATUS_SWAP_FIELD "VmSwap:"
 #define LINE_MAX 128
