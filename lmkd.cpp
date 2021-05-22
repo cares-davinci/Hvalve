@@ -3275,9 +3275,6 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = CRITICAL_KILL;
         strlcpy(kill_desc, "critical pressure and device is low on memory", sizeof(kill_desc));
-        if (wmark > WMARK_MIN) {
-            min_score_adj = VISIBLE_APP_ADJ;
-        }
     } else if (swap_is_low && thrashing > thrashing_limit_pct) {
         /* Page cache is thrashing while swap is low */
         kill_reason = LOW_SWAP_AND_THRASHING;
