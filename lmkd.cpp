@@ -25,7 +25,6 @@
 #include <pwd.h>
 #include <sched.h>
 #include <signal.h>
-#include <statslog_lmkd.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,7 +87,7 @@
 #define MEMINFO_PATH "/proc/meminfo"
 #define VMSTAT_PATH "/proc/vmstat"
 #define PROC_STATUS_TGID_FIELD "Tgid:"
-#define TRACE_MARKER_PATH "/sys/kernel/debug/tracing/trace_marker"
+#define TRACE_MARKER_PATH "/sys/kernel/tracing/trace_marker"
 #define PROC_STATUS_RSS_FIELD "VmRSS:"
 #define PROC_STATUS_SWAP_FIELD "VmSwap:"
 #define LINE_MAX 128
@@ -854,6 +853,49 @@ static void ctrl_data_write_lmk_kill_occurred(pid_t pid, uid_t uid) {
     for (int i = 0; i < MAX_DATA_CONN; i++) {
         if (data_sock[i].sock >= 0 && data_sock[i].async_event_mask & 1 << LMK_ASYNC_EVENT_KILL) {
             ctrl_data_write(i, (char*)packet, len);
+        }
+    }
+}
+
+/*
+ * Write the kill_stat/memory_stat over the data socket to be propagated via AMS to statsd
+ */
+static void stats_write_lmk_kill_occurred(struct kill_stat *kill_st,
+                                          struct memory_stat *mem_st) {
+    LMK_KILL_OCCURRED_PACKET packet;
+    const size_t len = lmkd_pack_set_kill_occurred(packet, kill_st, mem_st);
+    if (len == 0) {
+        return;
+    }
+
+    for (int i = 0; i < MAX_DATA_CONN; i++) {
+        if (data_sock[i].sock >= 0 && data_sock[i].async_event_mask & 1 << LMK_ASYNC_EVENT_STAT) {
+            ctrl_data_write(i, packet, len);
+        }
+    }
+
+}
+
+static void stats_write_lmk_kill_occurred_pid(int pid, struct kill_stat *kill_st,
+                                              struct memory_stat *mem_st) {
+    kill_st->taskname = stats_get_task_name(pid);
+    if (kill_st->taskname != NULL) {
+        stats_write_lmk_kill_occurred(kill_st, mem_st);
+    }
+}
+
+/*
+ * Write the state_changed over the data socket to be propagated via AMS to statsd
+ */
+static void stats_write_lmk_state_changed(enum lmk_state state) {
+    LMKD_CTRL_PACKET packet_state_changed;
+    const size_t len = lmkd_pack_set_state_changed(packet_state_changed, state);
+    if (len == 0) {
+        return;
+    }
+    for (int i = 0; i < MAX_DATA_CONN; i++) {
+        if (data_sock[i].sock >= 0 && data_sock[i].async_event_mask & 1 << LMK_ASYNC_EVENT_STAT) {
+            ctrl_data_write(i, (char*)packet_state_changed, len);
         }
     }
 }
@@ -2376,7 +2418,7 @@ static struct proc *proc_get_heaviest(int oomadj) {
     while (curr != head) {
         int pid = ((struct proc *)curr)->pid;
         long tasksize = proc_get_size(pid);
-        if (tasksize <= 0) {
+        if (tasksize < 0) {
             struct adjslot_list *next = curr->next;
             pid_remove(pid);
             curr = next;
@@ -2782,8 +2824,7 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
-                    stats_write_lmk_state_changed(
-                            android::lmkd::stats::LMK_STATE_CHANGED__STATE__START);
+                    stats_write_lmk_state_changed(STATE_START);
                 }
                 break;
             }
@@ -2798,7 +2839,7 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
     }
 
     if (lmk_state_change_start) {
-        stats_write_lmk_state_changed(android::lmkd::stats::LMK_STATE_CHANGED__STATE__STOP);
+        stats_write_lmk_state_changed(STATE_STOP);
     }
 
     return killed_size;
@@ -3275,9 +3316,6 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = CRITICAL_KILL;
         strlcpy(kill_desc, "critical pressure and device is low on memory", sizeof(kill_desc));
-        if (wmark > WMARK_MIN) {
-            min_score_adj = VISIBLE_APP_ADJ;
-        }
     } else if (swap_is_low && thrashing > thrashing_limit_pct) {
         /* Page cache is thrashing while swap is low */
         kill_reason = LOW_SWAP_AND_THRASHING;

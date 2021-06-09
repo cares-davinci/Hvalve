@@ -24,41 +24,33 @@
 #include <string.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/endian.h>
+#include <sys/param.h>
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
 #ifdef LMKD_LOG_STATS
 
-#define LINE_MAX 128
 #define STRINGIFY(x) STRINGIFY_INTERNAL(x)
 #define STRINGIFY_INTERNAL(x) #x
+
+/**
+ * Used to make sure that the payload is always smaller than LMKD_REPLY_MAX_SIZE
+ */
+#define BUILD_BUG_ON(cond) ((void)sizeof(char[1 - 2 * !!(cond)]))
 
 static bool enable_stats_log = property_get_bool("ro.lmk.log_stats", true);
 
 struct proc {
     int pid;
-    char taskname[LINE_MAX];
+    char taskname[MAX_TASKNAME_LEN];
     struct proc* pidhash_next;
 };
 
 #define PIDHASH_SZ 1024
 static struct proc** pidhash = NULL;
 #define pid_hashfn(x) ((((x) >> 8) ^ (x)) & (PIDHASH_SZ - 1))
-
-/**
- * Logs the change in LMKD state which is used as start/stop boundaries for logging
- * LMK_KILL_OCCURRED event.
- * Code: LMK_STATE_CHANGED = 54
- */
-int
-stats_write_lmk_state_changed(int32_t state) {
-    if (enable_stats_log) {
-        return android::lmkd::stats::stats_write(android::lmkd::stats::LMK_STATE_CHANGED, state);
-    } else {
-        return -EINVAL;
-    }
-}
 
 static struct proc* pid_lookup(int pid) {
     struct proc* procp;
@@ -71,68 +63,11 @@ static struct proc* pid_lookup(int pid) {
     return procp;
 }
 
-inline int32_t map_kill_reason(enum kill_reasons reason) {
-    switch (reason) {
-        case PRESSURE_AFTER_KILL:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__PRESSURE_AFTER_KILL;
-        case NOT_RESPONDING:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__NOT_RESPONDING;
-        case LOW_SWAP_AND_THRASHING:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_SWAP_AND_THRASHING;
-        case LOW_MEM_AND_SWAP:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_SWAP;
-        case LOW_MEM_AND_THRASHING:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_THRASHING;
-        case DIRECT_RECL_AND_THRASHING:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__DIRECT_RECL_AND_THRASHING;
-        case LOW_MEM_AND_SWAP_UTIL:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__LOW_MEM_AND_SWAP_UTIL;
-        default:
-            return android::lmkd::stats::LMK_KILL_OCCURRED__REASON__UNKNOWN;
-    }
-}
-
-/**
- * Logs the event when LMKD kills a process to reduce memory pressure.
- * Code: LMK_KILL_OCCURRED = 51
- */
-int stats_write_lmk_kill_occurred(struct kill_stat *kill_st, struct memory_stat *mem_st) {
-    if (enable_stats_log) {
-        return android::lmkd::stats::stats_write(
-                android::lmkd::stats::LMK_KILL_OCCURRED,
-                kill_st->uid,
-                kill_st->taskname,
-                kill_st->oom_score,
-                mem_st ? mem_st->pgfault : -1,
-                mem_st ? mem_st->pgmajfault : -1,
-                mem_st ? mem_st->rss_in_bytes : -1,
-                mem_st ? mem_st->cache_in_bytes : -1,
-                mem_st ? mem_st->swap_in_bytes : -1,
-                mem_st ? mem_st->process_start_time_ns : -1,
-                kill_st->min_oom_score,
-                kill_st->free_mem_kb,
-                kill_st->free_swap_kb,
-                map_kill_reason(kill_st->kill_reason)
-        );
-    } else {
-        return -EINVAL;
-    }
-}
-
-int stats_write_lmk_kill_occurred_pid(int pid, struct kill_stat *kill_st,
-                                      struct memory_stat* mem_st) {
-    struct proc* proc = pid_lookup(pid);
-    if (!proc) return -EINVAL;
-
-    kill_st->taskname = proc->taskname;
-    return stats_write_lmk_kill_occurred(kill_st, mem_st);
-}
-
 static void memory_stat_parse_line(char* line, struct memory_stat* mem_st) {
-    char key[LINE_MAX + 1];
+    char key[MAX_TASKNAME_LEN + 1];
     int64_t value;
 
-    sscanf(line, "%" STRINGIFY(LINE_MAX) "s  %" SCNd64 "", key, &value);
+    sscanf(line, "%" STRINGIFY(MAX_TASKNAME_LEN) "s  %" SCNd64 "", key, &value);
 
     if (strcmp(key, "total_") < 0) {
         return;
@@ -275,8 +210,8 @@ void stats_store_taskname(int pid, const char* taskname) {
     }
     procp = static_cast<struct proc*>(malloc(sizeof(struct proc)));
     procp->pid = pid;
-    strncpy(procp->taskname, taskname, LINE_MAX - 1);
-    procp->taskname[LINE_MAX - 1] = '\0';
+    strncpy(procp->taskname, taskname, MAX_TASKNAME_LEN - 1);
+    procp->taskname[MAX_TASKNAME_LEN - 1] = '\0';
     proc_insert(procp);
 }
 
@@ -297,6 +232,112 @@ void stats_purge_tasknames() {
         }
     }
     memset(pidhash, 0, PIDHASH_SZ * sizeof(*pidhash));
+}
+
+const char* stats_get_task_name(int pid) {
+    struct proc* proc = pid_lookup(pid);
+    return proc ? proc->taskname : NULL;
+}
+
+/**
+ * Writes int32 in a machine independent way
+ * https://docs.oracle.com/javase/7/docs/api/java/io/DataOutput.html#writeInt(int)
+ */
+static inline size_t pack_int32(LMK_KILL_OCCURRED_PACKET packet,
+                                size_t index,
+                                int32_t value) {
+    int32_t* int_buffer = (int32_t*)(packet + index);
+
+    *int_buffer = htonl(value);
+
+    return index + sizeof(int32_t);
+}
+
+/**
+ * Writes int64 in a machine independent way
+ * https://docs.oracle.com/javase/7/docs/api/java/io/DataOutput.html#writeLong(long)
+ */
+static inline size_t pack_int64(LMK_KILL_OCCURRED_PACKET packet,
+                                size_t index,
+                                int64_t value) {
+    int64_t* int64_buffer = (int64_t*)(packet + index);
+
+    *int64_buffer = htonq(value);
+
+    return index + sizeof(int64_t);
+}
+
+/**
+ * Writes ANSI string in a machine independent way
+ * https://docs.oracle.com/javase/7/docs/api/java/io/DataOutput.html#writeShort(int)
+ * 2 bytes str len following n chars
+ * to be read on the Java side with
+ * https://docs.oracle.com/javase/7/docs/api/java/io/DataInput.html#readUTF()
+ * Truncates the value string & packs up to MAX_TASKNAME_LEN - 1 chars
+ */
+static inline size_t pack_string(LMK_KILL_OCCURRED_PACKET packet,
+                                 size_t index,
+                                 const char* value) {
+    const size_t len_proc_name = MIN(strlen(value), MAX_TASKNAME_LEN - 1);
+    int16_t* short_buffer = (int16_t*)(packet + index);
+    *short_buffer = htons((int16_t)len_proc_name);
+
+    char* byte_buffer = (char*)(short_buffer + 1);
+    strncpy(byte_buffer, value, MAX_TASKNAME_LEN - 1);
+    byte_buffer[MAX_TASKNAME_LEN - 1] = '\0';
+
+    return index + sizeof(int16_t) + len_proc_name + 1;
+}
+
+size_t lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet,
+                                   struct kill_stat *kill_stat,
+                                   struct memory_stat *mem_stat) {
+    BUILD_BUG_ON(sizeof(LMK_KILL_OCCURRED_PACKET) > LMKD_REPLY_MAX_SIZE);
+
+    if (!enable_stats_log) {
+        return 0;
+    }
+
+    int32_t index = 0;
+    index = pack_int32(packet, index, LMK_STAT_KILL_OCCURRED);
+
+    if (mem_stat) {
+        index = pack_int64(packet, index, mem_stat->pgfault);
+        index = pack_int64(packet, index, mem_stat->pgmajfault);
+        index = pack_int64(packet, index, mem_stat->rss_in_bytes);
+        index = pack_int64(packet, index, mem_stat->cache_in_bytes);
+        index = pack_int64(packet, index, mem_stat->swap_in_bytes);
+        index = pack_int64(packet, index, mem_stat->process_start_time_ns);
+    } else {
+        index = pack_int64(packet, index, -1);
+        index = pack_int64(packet, index, -1);
+        index = pack_int64(packet, index, -1);
+        index = pack_int64(packet, index, -1);
+        index = pack_int64(packet, index, -1);
+        index = pack_int64(packet, index, -1);
+    }
+
+    index = pack_int32(packet, index, kill_stat->uid);
+    index = pack_int32(packet, index, kill_stat->oom_score);
+    index = pack_int32(packet, index, kill_stat->min_oom_score);
+    index = pack_int32(packet, index, (int)kill_stat->free_mem_kb);
+    index = pack_int32(packet, index, (int)kill_stat->free_swap_kb);
+    index = pack_int32(packet, index, (int)kill_stat->kill_reason);
+
+    index = pack_string(packet, index, kill_stat->taskname);
+    return index;
+}
+
+size_t lmkd_pack_set_state_changed(LMKD_CTRL_PACKET packet,
+                                   enum lmk_state state) {
+    if (!enable_stats_log) {
+        return 0;
+    }
+
+    packet[0] = htonl(LMK_STAT_STATE_CHANGED);
+    packet[1] = htonl(state);
+
+    return 2 * sizeof(int);
 }
 
 #endif /* LMKD_LOG_STATS */
