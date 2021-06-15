@@ -4095,7 +4095,11 @@ static void mainloop(void) {
             }
             if (poll_now) {
 		if (force_use_old_strategy) {
-			if (s_crit_event) {
+			struct timespec curr_tm;
+
+			clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+			if (s_crit_event &&
+			    (get_time_diff_ms(&poll_params.poll_start_tm, &curr_tm) < psi_window_size_ms)) {
 				vmstat_parse(&poll2);
 				if ((nevents > 0 && have_psi_events(events, nevents)) ||
 				    (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
