@@ -4300,21 +4300,31 @@ static void mainloop(void) {
                     poll_params.polling_interval_ms);
             }
             if (poll_now) {
-                if (force_use_old_strategy) {
-                    if (s_crit_event) {
-                        vmstat_parse(&poll2);
-                        if ((nevents > 0 && have_psi_events(events, nevents)) ||
-                            (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
-                            !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
-                            !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle))) {
-                            skip_call_handler = true;
-                        }
-                        poll1 = poll2;
-                    }
-                }
-                if (!skip_call_handler) {
-                    call_handler(poll_params.poll_handler, &poll_params, 0);
-                }
+		if (force_use_old_strategy) {
+			struct timespec curr_tm;
+
+			clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+			if (s_crit_event &&
+			    (get_time_diff_ms(&poll_params.poll_start_tm, &curr_tm) < psi_window_size_ms)) {
+				vmstat_parse(&poll2);
+				if ((nevents > 0 && have_psi_events(events, nevents)) ||
+				    (!(poll2.field.pgscan_direct - poll1.field.pgscan_direct) &&
+				    !(poll2.field.pgscan_kswapd - poll1.field.pgscan_kswapd) &&
+				    !(poll2.field.pgscan_direct_throttle - poll1.field.pgscan_direct_throttle))) {
+					skip_call_handler = true;
+					/*
+					 * In the case of skipping call handler, make sure that poll_params.update
+					 * changes from POLLING_RESUME. If call_handler() is not skipped, this
+					 * would be set there.
+					 */
+					poll_params.update = POLLING_DO_NOT_CHANGE;
+				}
+				poll1 = poll2;
+			}
+		}
+		if (!skip_call_handler) {
+			call_handler(poll_params.poll_handler, &poll_params, 0);
+		}
             }
         } else {
             if (kill_timeout_ms && is_waiting_for_kill()) {
