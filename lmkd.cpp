@@ -53,6 +53,9 @@
 
 #include "statslog.h"
 
+#define BPF_FD_JUST_USE_INT
+#include "BpfSyscallWrappers.h"
+
 /*
  * Define LMKD_TRACE_KILLS to record lmkd kills in kernel traces
  * to profile and correlate with OOM kills
@@ -431,6 +434,7 @@ union meminfo {
         int64_t cma_free;
         /* fields below are calculated rather than read from the file */
         int64_t nr_file_pages;
+        int64_t total_gpu_kb;
     } field;
     int64_t arr[MI_FIELD_COUNT];
 };
@@ -1785,6 +1789,21 @@ static bool meminfo_parse_line(char *line, union meminfo *mi) {
     return (match_res != PARSE_FAIL);
 }
 
+static int64_t read_gpu_total_kb() {
+    static int fd = android::bpf::bpfFdGet(
+            "/sys/fs/bpf/map_gpu_mem_gpu_mem_total_map", BPF_F_RDONLY);
+    static constexpr uint64_t kBpfKeyGpuTotalUsage = 0;
+    uint64_t value;
+
+    if (fd < 0) {
+        return 0;
+    }
+
+    return android::bpf::findMapEntry(fd, &kBpfKeyGpuTotalUsage, &value)
+            ? 0
+            : (int32_t)(value / 1024);
+}
+
 static int meminfo_parse(union meminfo *mi) {
     static struct reread_data file_data = {
         .filename = MEMINFO_PATH,
@@ -1809,6 +1828,7 @@ static int meminfo_parse(union meminfo *mi) {
     }
     mi->field.nr_file_pages = mi->field.cached + mi->field.swap_cached +
         mi->field.buffers;
+    mi->field.total_gpu_kb = read_gpu_total_kb();
 
     return 0;
 }
@@ -1923,6 +1943,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, wi->wakeups_since_event);
     android_log_write_int32(ctx, wi->skipped_wakeups);
     android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
+    android_log_write_int32(ctx, (int32_t)mi->field.total_gpu_kb);
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
