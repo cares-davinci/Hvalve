@@ -23,6 +23,9 @@ cc_binary {
         "libstatslogc",
         "liblmkd_utils",
     ],
+    header_libs: [
+        "bpf_syscall_wrappers",
+    ],
     local_include_dirs: ["include"],
     cflags: [
         "-Wall",
