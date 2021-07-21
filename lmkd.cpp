@@ -3407,7 +3407,7 @@ static void update_props() {
     thrashing_limit_decay_pct = clamp(0, 100, property_get_int32("ro.lmk.thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
     thrashing_critical_pct = max(0, property_get_int32("ro.lmk.thrashing_limit_critical",
-        thrashing_limit_pct * 2));
+        INT_MAX));
     swap_util_max = clamp(0, 100, property_get_int32("ro.lmk.swap_util_max", 100));
 }
 
