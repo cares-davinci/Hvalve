@@ -3429,7 +3429,7 @@ static void update_props() {
     thrashing_limit_decay_pct = clamp(0, 100, property_get_int32("ro.lmk.thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
     thrashing_critical_pct = max(0, property_get_int32("ro.lmk.thrashing_limit_critical",
-        INT_MAX));
+        thrashing_limit_pct * 2));
     swap_util_max = clamp(0, 100, property_get_int32("ro.lmk.swap_util_max", 100));
     filecache_min_kb = property_get_int64("ro.lmk.filecache_min_kb", 0);
 }
