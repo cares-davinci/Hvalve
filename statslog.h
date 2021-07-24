@@ -35,13 +35,13 @@ __BEGIN_DECLS
  * Max LMKD reply packet length in bytes
  * Notes about size calculation:
  * 4 bytes for packet type
- * 80 bytes for the LmkKillOccurred fields: memory_stat + kill_stat
+ * 88 bytes for the LmkKillOccurred fields: memory_stat + kill_stat
  * 2 bytes for process name string size
  * MAX_TASKNAME_LEN bytes for the process name string
  *
  * Must be in sync with LmkdConnection.java
  */
-#define LMKD_REPLY_MAX_SIZE 214
+#define LMKD_REPLY_MAX_SIZE 222
 
 /* LMK_MEMORY_STATS packet payload */
 struct memory_stat {
@@ -76,6 +76,8 @@ struct kill_stat {
     int32_t min_oom_score;
     int64_t free_mem_kb;
     int64_t free_swap_kb;
+    int32_t thrashing;
+    int32_t max_thrashing;
 };
 
 /* LMKD reply packet to hold data for the LmkKillOccurred statsd atom */
