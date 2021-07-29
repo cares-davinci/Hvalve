@@ -323,6 +323,8 @@ size_t lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet,
     index = pack_int32(packet, index, (int)kill_stat->free_mem_kb);
     index = pack_int32(packet, index, (int)kill_stat->free_swap_kb);
     index = pack_int32(packet, index, (int)kill_stat->kill_reason);
+    index = pack_int32(packet, index, kill_stat->thrashing);
+    index = pack_int32(packet, index, kill_stat->max_thrashing);
 
     index = pack_string(packet, index, kill_stat->taskname);
     return index;
