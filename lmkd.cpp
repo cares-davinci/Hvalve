@@ -2709,10 +2709,16 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
     maxevents++;
 }
 
+struct kill_info {
+    enum kill_reasons kill_reason;
+    const char *kill_desc;
+    int thrashing;
+    int max_thrashing;
+};
+
 /* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
-static int kill_one_process(struct proc* procp, int min_oom_score, enum kill_reasons kill_reason,
-                            const char *kill_desc, union meminfo *mi, struct wakeup_info *wi,
-                            struct timespec *tm) {
+static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_info *ki,
+                            union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
     int pid = procp->pid;
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
@@ -2779,19 +2785,25 @@ static int kill_one_process(struct proc* procp, int min_oom_score, enum kill_rea
 
     inc_killcnt(procp->oomadj);
 
-    killinfo_log(procp, min_oom_score, rss_kb, swap_kb, kill_reason, mi, wi, tm);
-
-    if (kill_desc) {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
-              "kB swap; reason: %s", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb, kill_desc);
+    if (ki) {
+        kill_st.kill_reason = ki->kill_reason;
+        kill_st.thrashing = ki->thrashing;
+        kill_st.max_thrashing = ki->max_thrashing;
+        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki->kill_reason, mi, wi, tm);
+        ULMK_LOG(I,"Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
+              "kB swap; reason: %s", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb,
+              ki->kill_desc);
     } else {
-        ULMK_LOG(I, "Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
+        kill_st.kill_reason = NONE;
+        kill_st.thrashing = 0;
+        kill_st.max_thrashing = 0;
+        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, NONE, mi, wi, tm);
+        ULMK_LOG(I,"Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kb swap", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb);
     }
 
     kill_st.uid = static_cast<int32_t>(uid);
     kill_st.taskname = taskname;
-    kill_st.kill_reason = kill_reason;
     kill_st.oom_score = procp->oomadj;
     kill_st.min_oom_score = min_oom_score;
     kill_st.free_mem_kb = mi->field.nr_free_pages * page_k;
@@ -2815,8 +2827,7 @@ out:
  * Find one process to kill at or above the given oom_score_adj level.
  * Returns size of the killed process.
  */
-static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reason,
-                                 const char *kill_desc, union meminfo *mi,
+static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union meminfo *mi,
                                  struct wakeup_info *wi, struct timespec *tm) {
     int i;
     int killed_size = 0;
@@ -2841,8 +2852,7 @@ static int find_and_kill_process(int min_score_adj, enum kill_reasons kill_reaso
             if (!procp)
                 break;
 
-            killed_size = kill_one_process(procp, min_score_adj, kill_reason, kill_desc,
-                                           mi, wi, tm);
+            killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm);
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
@@ -3109,6 +3119,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static struct timespec thrashing_reset_tm;
     static int64_t prev_thrash_growth = 0;
     static bool check_filecache = false;
+    static int max_thrashing = 0;
 
     union meminfo mi;
     union vmstat vs;
@@ -3297,6 +3308,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     }
     /* Add previous cycle's decayed thrashing amount */
     thrashing += prev_thrash_growth;
+    if (max_thrashing < thrashing) {
+        max_thrashing = thrashing;
+    }
 
     if (zoneinfo_parse(&zi) < 0) {
         ALOGE("Failed to parse zoneinfo!");
@@ -3417,10 +3431,16 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
     /* Kill a process if necessary */
     if (kill_reason != NONE) {
-        int pages_freed = find_and_kill_process(min_score_adj, kill_reason, kill_desc, &mi,
-                                                &wi, &curr_tm);
+        struct kill_info ki = {
+            .kill_reason = kill_reason,
+            .kill_desc = kill_desc,
+            .thrashing = (int)thrashing,
+            .max_thrashing = max_thrashing,
+        };
+        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm);
         if (pages_freed > 0) {
             killing = true;
+            max_thrashing = 0;
             /* Killed..Just reduce/increase the boost... */
             if (kill_reason == CRITICAL_KILL || kill_reason == DIRECT_RECL_AND_THROT) {
                 wbf_effective =  min(wbf_effective + wbf_step, wmark_boost_factor);
@@ -3758,7 +3778,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device && per_app_memcg) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NONE, NULL, &mi, &wi, &curr_tm) == 0) {
+        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3789,7 +3809,7 @@ do_kill:
             }
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, NONE, NULL, &mi, &wi, &curr_tm);
+        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
@@ -4641,7 +4661,7 @@ static void update_props() {
     thrashing_limit_decay_pct = clamp(0, 100, property_get_int32("ro.lmk.thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
     thrashing_critical_pct = max(0, property_get_int32("ro.lmk.thrashing_limit_critical",
-        INT_MAX));
+        thrashing_limit_pct * 2));
     swap_util_max = clamp(0, 100, property_get_int32("ro.lmk.swap_util_max", 100));
     filecache_min_kb = property_get_int64("ro.lmk.filecache_min_kb", 0);
 
