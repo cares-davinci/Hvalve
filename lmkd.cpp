@@ -3466,7 +3466,7 @@ static void update_props() {
 
 int main(int argc, char **argv) {
     if ((argc > 1) && argv[1] && !strcmp(argv[1], "--reinit")) {
-        if (property_set(LMKD_REINIT_PROP, "0")) {
+        if (property_set(LMKD_REINIT_PROP, "")) {
             ALOGE("Failed to reset " LMKD_REINIT_PROP " property");
         }
         return issue_reinit();
