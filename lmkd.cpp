@@ -206,6 +206,7 @@ static int last_kill_pid_or_fd = -1;
 static struct timespec last_kill_tm;
 
 /* lmkd configurable parameters */
+static bool is_userdebug_or_eng_build;
 static bool debug_process_killing;
 static bool enable_pressure_upgrade;
 static int64_t upgrade_pressure;
@@ -2866,7 +2867,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
         }
     }
 
-    if (!killed_size && !min_score_adj) {
+    if (!killed_size && !min_score_adj && is_userdebug_or_eng_build) {
         killed_size = proc_get_script();
     }
 
@@ -4633,6 +4634,7 @@ static void update_props() {
     /* This will gets updated through perf_get_prop. */
     level_oomadj[VMPRESS_LEVEL_SUPER_CRITICAL] = 606;
     debug_process_killing = property_get_bool("ro.lmk.debug", false);
+    is_userdebug_or_eng_build = property_get_bool("ro.debuggable", false);
 
     /* By default disable upgrade/downgrade logic */
     enable_pressure_upgrade =
