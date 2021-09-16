@@ -115,6 +115,16 @@
 #define STRINGIFY_INTERNAL(x) #x
 
 /*
+ * Read lmk property with persist.device_config.lmkd_native.<name> overriding ro.lmk.<name>
+ * persist.device_config.lmkd_native.* properties are being set by experiments. If a new property
+ * can be controlled by an experiment then use GET_LMK_PROPERTY instead of property_get_xxx and
+ * add "on property" triggers in lmkd.rc to react to the experiment flag changes.
+ */
+#define GET_LMK_PROPERTY(type, name, def) \
+    property_get_##type("persist.device_config.lmkd_native." name, \
+        property_get_##type("ro.lmk." name, def))
+
+/*
  * PSI monitor tracking window size.
  * PSI monitor generates events at most once per window,
  * therefore we poll memory state for the duration of
@@ -2984,7 +2994,7 @@ static bool init_psi_monitors() {
      * use new kill strategy based on zone watermarks, free swap and thrashing stats
      */
     bool use_new_strategy =
-        property_get_bool("ro.lmk.use_new_strategy", low_ram_device || !use_minfree_levels);
+        GET_LMK_PROPERTY(bool, "use_new_strategy", low_ram_device || !use_minfree_levels);
 
     /* In default PSI mode override stall amounts using system properties */
     if (use_new_strategy) {
@@ -3100,7 +3110,7 @@ static void kernel_event_handler(int data __unused, uint32_t events __unused,
 
 static bool init_monitors() {
     /* Try to use psi monitor first if kernel has it */
-    use_psi_monitors = property_get_bool("ro.lmk.use_psi", true) &&
+    use_psi_monitors = GET_LMK_PROPERTY(bool, "use_psi", true) &&
         init_psi_monitors();
     /* Fall back to vmpressure */
     if (!use_psi_monitors &&
@@ -3415,48 +3425,48 @@ int issue_reinit() {
 static void update_props() {
     /* By default disable low level vmpressure events */
     level_oomadj[VMPRESS_LEVEL_LOW] =
-        property_get_int32("ro.lmk.low", OOM_SCORE_ADJ_MAX + 1);
+        GET_LMK_PROPERTY(int32, "low", OOM_SCORE_ADJ_MAX + 1);
     level_oomadj[VMPRESS_LEVEL_MEDIUM] =
-        property_get_int32("ro.lmk.medium", 800);
+        GET_LMK_PROPERTY(int32, "medium", 800);
     level_oomadj[VMPRESS_LEVEL_CRITICAL] =
-        property_get_int32("ro.lmk.critical", 0);
-    debug_process_killing = property_get_bool("ro.lmk.debug", false);
+        GET_LMK_PROPERTY(int32, "critical", 0);
+    debug_process_killing = GET_LMK_PROPERTY(bool, "debug", false);
 
     /* By default disable upgrade/downgrade logic */
     enable_pressure_upgrade =
-        property_get_bool("ro.lmk.critical_upgrade", false);
+        GET_LMK_PROPERTY(bool, "critical_upgrade", false);
     upgrade_pressure =
-        (int64_t)property_get_int32("ro.lmk.upgrade_pressure", 100);
+        (int64_t)GET_LMK_PROPERTY(int32, "upgrade_pressure", 100);
     downgrade_pressure =
-        (int64_t)property_get_int32("ro.lmk.downgrade_pressure", 100);
+        (int64_t)GET_LMK_PROPERTY(int32, "downgrade_pressure", 100);
     kill_heaviest_task =
-        property_get_bool("ro.lmk.kill_heaviest_task", false);
+        GET_LMK_PROPERTY(bool, "kill_heaviest_task", false);
     low_ram_device = property_get_bool("ro.config.low_ram", false);
     kill_timeout_ms =
-        (unsigned long)property_get_int32("ro.lmk.kill_timeout_ms", 100);
+        (unsigned long)GET_LMK_PROPERTY(int32, "kill_timeout_ms", 100);
     use_minfree_levels =
-        property_get_bool("ro.lmk.use_minfree_levels", false);
+        GET_LMK_PROPERTY(bool, "use_minfree_levels", false);
     per_app_memcg =
         property_get_bool("ro.config.per_app_memcg", low_ram_device);
-    swap_free_low_percentage = clamp(0, 100, property_get_int32("ro.lmk.swap_free_low_percentage",
+    swap_free_low_percentage = clamp(0, 100, GET_LMK_PROPERTY(int32, "swap_free_low_percentage",
         DEF_LOW_SWAP));
-    psi_partial_stall_ms = property_get_int32("ro.lmk.psi_partial_stall_ms",
+    psi_partial_stall_ms = GET_LMK_PROPERTY(int32, "psi_partial_stall_ms",
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
-    psi_complete_stall_ms = property_get_int32("ro.lmk.psi_complete_stall_ms",
+    psi_complete_stall_ms = GET_LMK_PROPERTY(int32, "psi_complete_stall_ms",
         DEF_COMPLETE_STALL);
-    thrashing_limit_pct = max(0, property_get_int32("ro.lmk.thrashing_limit",
+    thrashing_limit_pct = max(0, GET_LMK_PROPERTY(int32, "thrashing_limit",
         low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
-    thrashing_limit_decay_pct = clamp(0, 100, property_get_int32("ro.lmk.thrashing_limit_decay",
+    thrashing_limit_decay_pct = clamp(0, 100, GET_LMK_PROPERTY(int32, "thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
-    thrashing_critical_pct = max(0, property_get_int32("ro.lmk.thrashing_limit_critical",
+    thrashing_critical_pct = max(0, GET_LMK_PROPERTY(int32, "thrashing_limit_critical",
         thrashing_limit_pct * 2));
-    swap_util_max = clamp(0, 100, property_get_int32("ro.lmk.swap_util_max", 100));
-    filecache_min_kb = property_get_int64("ro.lmk.filecache_min_kb", 0);
+    swap_util_max = clamp(0, 100, GET_LMK_PROPERTY(int32, "swap_util_max", 100));
+    filecache_min_kb = GET_LMK_PROPERTY(int64, "filecache_min_kb", 0);
 }
 
 int main(int argc, char **argv) {
     if ((argc > 1) && argv[1] && !strcmp(argv[1], "--reinit")) {
-        if (property_set(LMKD_REINIT_PROP, "0")) {
+        if (property_set(LMKD_REINIT_PROP, "")) {
             ALOGE("Failed to reset " LMKD_REINIT_PROP " property");
         }
         return issue_reinit();
