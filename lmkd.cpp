@@ -2015,7 +2015,7 @@ static void set_process_group_and_prio(int pid, const std::vector<std::string>& 
             ALOGW("Unable to raise priority of killing t_pid (%d): errno=%d", t_pid, errno);
         }
 
-        if (!SetTaskProfiles(t_pid, profiles)) {
+        if (!SetTaskProfiles(t_pid, profiles, true)) {
             ALOGW("Failed to set task_profiles on pid(%d) t_pid(%d)", pid, t_pid);
             continue;
         }
