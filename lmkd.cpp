@@ -2191,7 +2191,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         goto out;
     }
 
-    set_process_group_and_prio(pid, {"CPUSET_SP_BACKGROUND", "SCHED_SP_FOREGROUND"},
+    set_process_group_and_prio(pid, {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
                                ANDROID_PRIORITY_HIGHEST);
 
     last_kill_tm = *tm;
