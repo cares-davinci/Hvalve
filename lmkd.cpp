@@ -98,6 +98,7 @@
 
 #define PERCEPTIBLE_APP_ADJ 200
 #define VISIBLE_APP_ADJ 100
+#define PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ 50
 
 /* Android Logger event logtags (see event.logtags) */
 #define KILLINFO_LOG_TAG 10195355
@@ -3340,13 +3341,14 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = PRESSURE_AFTER_KILL;
         strlcpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
+        min_score_adj = PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ;
         if (wmark > WMARK_MIN) {
             min_score_adj = VISIBLE_APP_ADJ;
         }
     } else if (reclaim == DIRECT_RECLAIM_THROTTLE) {
         kill_reason = DIRECT_RECL_AND_THROT;
         strlcpy(kill_desc, "system processes are being throttled", sizeof(kill_desc));
-    } else if (level >= VMPRESS_LEVEL_CRITICAL && wmark <= WMARK_HIGH) {
+    } else if (level == VMPRESS_LEVEL_CRITICAL && wmark <= WMARK_HIGH) {
         /*
          * Device is too busy reclaiming memory which might lead to ANR.
          * Critical level is triggered when PSI complete stall (all tasks are blocked because
@@ -3354,6 +3356,22 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          */
         kill_reason = CRITICAL_KILL;
         strlcpy(kill_desc, "critical pressure and device is low on memory", sizeof(kill_desc));
+        min_score_adj = PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ;
+    } else if (level == VMPRESS_LEVEL_SUPER_CRITICAL && wmark <= WMARK_HIGH) {
+        /*
+         * Device is too busy reclaiming memory which might lead to ANR.
+         * Critical level is triggered when PSI complete stall (all tasks are blocked because
+         * of the memory congestion) breaches the configured threshold.
+         */
+        /*
+         * The preexisting NOT_RESPONDING event was only allowed 1 kill per psi window. Instead
+         * allow very agressive killing of all apps without considering thrashing, under the
+         * assumption that this event will not be triggered unless file cache is very small.
+         * Intended to kill memory stress tests which allocate memory with the intention of
+         * reaching OOM.
+         */
+        kill_reason = NOT_RESPONDING;
+        strncpy(kill_desc, "device is not responding", sizeof(kill_desc));
     } else if (swap_is_low && thrashing > thrashing_limit_pct) {
         /* Page cache is thrashing while swap is low */
         kill_reason = LOW_SWAP_AND_THRASHING;
@@ -3391,9 +3409,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached and thrashing (%"
             PRId64 "%%)", wmark < WMARK_LOW ? "min" : "low", thrashing);
         cut_thrashing_limit = true;
-        if (thrashing < thrashing_critical_pct) {
-            min_score_adj = VISIBLE_APP_ADJ;
-        }
+        min_score_adj = VISIBLE_APP_ADJ;
+
         check_filecache = true;
     } else if (reclaim == DIRECT_RECLAIM && thrashing > thrashing_limit) {
         /* Page cache is thrashing while in direct reclaim (mostly happens on lowram devices) */
@@ -3402,9 +3419,8 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             PRId64 "%%)", thrashing);
         cut_thrashing_limit = true;
         /* Do not kill perceptible apps unless thrashing at critical levels */
-        if (thrashing < thrashing_critical_pct) {
-            min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
-        }
+        min_score_adj = PERCEPTIBLE_APP_ADJ + 1;
+
         check_filecache = true;
     } else if (check_filecache) {
         int64_t file_lru_kb = (vs.field.nr_inactive_file + vs.field.nr_active_file) * page_k;
