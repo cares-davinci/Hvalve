@@ -4255,7 +4255,8 @@ static void call_handler(struct event_handler_info* handler_info,
         break;
     case POLLING_CRIT_UPGRADE:
         poll_params->poll_start_tm = curr_tm;
-        poll_params->poll_handler = &vmpressure_hinfo[VMPRESS_LEVEL_CRITICAL];
+        if ((enum vmpressure_level)handler_info->data <= VMPRESS_LEVEL_CRITICAL)
+            poll_params->poll_handler = &vmpressure_hinfo[VMPRESS_LEVEL_CRITICAL];
         break;
     }
 }
