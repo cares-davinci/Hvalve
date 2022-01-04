@@ -1,0 +1,4 @@
+[submodule "arch/arm64/boot/dts/vendor/qcom"]
+	path = arch/arm64/boot/dts/vendor/qcom
+	url = git@github.com:dgist-datalab/lahaina-dt.git
+	branch = master
