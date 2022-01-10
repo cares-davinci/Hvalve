@@ -18,7 +18,14 @@ if [[ "${1}" == "skip" ]] ; then
 	echo "Skipping Compilation"
 else
 	echo "Compiling kernel"
-	cp defconfig .config
+	if echo "$0" | grep -q debug; then
+		grep -vP "CONFIG_SERIAL_MSM_GENI.*CONSOLE" defconfig > .config
+		echo "CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE=y" >> .config
+		echo "CONFIG_SERIAL_MSM_GENI_CONSOLE=y" >> .config
+		echo "earlycon is enabled for debugging!"
+	else
+		cp defconfig .config
+	fi
 	make "$@" || exit 1
 fi
 
