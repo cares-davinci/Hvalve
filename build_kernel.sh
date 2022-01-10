@@ -58,6 +58,22 @@ mkbootimg \
     --header_version 3 \
     -o $KERNELDIR/boot.img
 
+find arch/arm64/boot/dts/vendor/qcom/ -name '*.dtb' -exec cat {} + > dtb
+mkbootimg \
+    --vendor_ramdisk vendor_boot/ramdisk.cpio.gz \
+    --base 0x00000000 \
+    --dtb dtb \
+    --dtb_offset 0x01f00000 \
+    --header_version 3 \
+    --kernel_offset 0x00008000 \
+    --pagesize 4096 \
+    --ramdisk_offset 0x01000000 \
+    --tags_offset 0x00000100 \
+    --vendor_cmdline 'console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket pcie_ports=compat loop.max_part=7 iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1 buildvariant=userdebug' \
+    --vendor_boot vendor_boot.img
+
+ln -f arch/arm64/boot/dtbo.img .
+
 GENERATED_SIZE=$(stat -c %s boot.img)
 if [[ $GENERATED_SIZE -gt $PARTITION_SIZE ]]; then
 	echo "boot.img size larger than partition size!" 1>&2
@@ -65,5 +81,5 @@ if [[ $GENERATED_SIZE -gt $PARTITION_SIZE ]]; then
 fi
 
 echo "done"
-ls -al boot.img
+ls -al boot.img dtbo.img vendor_boot.img
 echo ""
