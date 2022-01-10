@@ -69,6 +69,7 @@ modules.order
 
 # ramfs
 !/ramdisk/**
+!/vendor_boot/**
 
 #
 # RPM spec file (make rpm-pkg)
