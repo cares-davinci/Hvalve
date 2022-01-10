@@ -22,8 +22,6 @@ else
 	make "$@" || exit 1
 fi
 
-pigz < arch/arm64/boot/Image > arch/arm64/boot/Image.gz &
-
 echo "Building new ramdisk"
 #remove previous ramfs files
 rm -rf '$RAMFS_TMP'*
@@ -48,9 +46,8 @@ ls -lh $RAMFS_TMP.cpio.gz
 cd $KERNELDIR
 
 echo "Making new boot image"
-wait
 mkbootimg \
-    --kernel $KERNELDIR/arch/arm64/boot/Image.gz \
+    --kernel $KERNELDIR/arch/arm64/boot/Image \
     --ramdisk $RAMFS_TMP.cpio.gz \
     --pagesize 4096 \
     --os_version     $OS \
