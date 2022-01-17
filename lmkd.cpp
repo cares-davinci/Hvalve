@@ -3171,7 +3171,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
     record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
 
-    if (level == VMPRESS_LEVEL_LOW) {
+    if (level == VMPRESS_LEVEL_MEDIUM) {
         if (enable_preferred_apps &&
                 (get_time_diff_ms(&last_pa_update_tm, &curr_tm) >= pa_update_timeout_ms)) {
             perf_ux_engine_trigger(PAPP_OPCODE, preferred_apps);
