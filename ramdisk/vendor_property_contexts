@@ -1,5 +1,5 @@
 #line 1 "device/qcom/sepolicy_vndr/generic/vendor/common/property_contexts"
-# Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+# Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
@@ -71,6 +71,7 @@ vendor.wlan.firmware.version     u:object_r:vendor_wifi_version:s0
 persist.vendor.usb.        u:object_r:vendor_usb_prop:s0
 ro.vendor.usb.             u:object_r:vendor_usb_prop:s0
 vendor.display.               u:object_r:vendor_display_prop:s0
+vendor.display.disable_rounded_corner_thread  u:object_r:vendor_display_prop:s0
 ro.vendor.display.            u:object_r:vendor_display_prop:s0
 persist.vendor.display.       u:object_r:vendor_display_prop:s0
 vendor.gralloc.            u:object_r:vendor_gralloc_prop:s0
@@ -137,12 +138,16 @@ ctl.vendor.authsecret.qti-1-0      u:object_r:vendor_km_strongbox_version_prop:s
 #vendor-adsprpc
 vendor.fastrpc.                  u:object_r:vendor_adsprpc_prop:s0
 
-# QCV properties for storing soc_id and soc_name
+# QCV properties for storing soc_id, soc_name and soc_model
 ro.vendor.qti.soc_id         u:object_r:vendor_soc_id_prop:s0
 ro.vendor.qti.soc_name       u:object_r:vendor_soc_name_prop:s0
+ro.vendor.qti.soc_model      u:object_r:vendor_soc_model_prop:s0
 
 #kernel console log level
 persist.vendor.console.silent.config    u:object_r:vendor_console_log_level_prop:s0
+
+#qteeconnector properties
+persist.vendor.qteeconnector.           u:object_r:vendor_qteeconnector_opti_prop:s0
 
 vendor.dcvs.prop                 u:object_r:vendor_dcvs_prop:s0
 #line 1 "device/qcom/sepolicy_vndr/qva/vendor/common/property_contexts"
@@ -181,6 +186,7 @@ ctl.vendor.dataadpl                          u:object_r:vendor_dataadpl_prop:s0
 vendor.spcom.                                u:object_r:vendor_spcomlib_prop:s0
 persist.vendor.bt.soc.scram_freqs            u:object_r:vendor_bluetooth_prop:s0
 ctl.vendor.mdm_helper                        u:object_r:vendor_mdm_helper_prop:s0
+ctl.vendor.hvdcp_opti                        u:object_r:vendor_hvdcp_opti_prop:s0
 
 # qcc property
 vendor.qti.qdma.                             u:object_r:vendor_qcc_prop:s0
@@ -218,6 +224,9 @@ vendor.sys.boot_mode                         u:object_r:vendor_boot_mode_prop:s0
 vendor.media.target.version                  u:object_r:vendor_video_prop:s0
 vendor.video.disable.ubwc                    u:object_r:vendor_video_prop:s0
 vendor.media.target_variant                  u:object_r:vendor_video_prop:s0
+vendor.media.target.qssi                     u:object_r:vendor_video_prop:s0
+vendor.media.system.build_codename           u:object_r:vendor_video_prop:s0
+vendor.netflix.bsp_rev                       u:object_r:vendor_video_prop:s0
 
 # factory properties
 ctl.vendor.mmid                              u:object_r:vendor_ctl_vendor_mmid_prop:s0

@@ -14,6 +14,7 @@
 /(system_ext|system/system_ext)/bin/qspmsvc           u:object_r:vendor_qspmsvc_exec:s0
 /data/dpm(/.*)?                                 u:object_r:vendor_dpmd_data_file:s0
 /data/nfc(/.*)?                                 u:object_r:nfc_data_file:s0
+/dev/hidraw.*                                   u:object_r:vendor_hid_device:s0
 /data/misc/qvr(/.*)?                            u:object_r:vendor_qvrd_data_file:s0
 /data/misc/sxr(/.*)?                            u:object_r:vendor_sys_sxrd_data_file:s0
 /data/misc/qdma(/.*)?                           u:object_r:vendor_qcc_data_file:s0
