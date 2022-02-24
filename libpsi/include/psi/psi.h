@@ -23,6 +23,8 @@
 __BEGIN_DECLS
 
 #define PSI_PATH_MEMORY	"/proc/pressure/memory"
+#define PSI_PATH_IO	"/proc/pressure/io"
+#define PSI_PATH_CPU	"/proc/pressure/cpu"
 
 enum psi_stall_type {
     PSI_SOME,
@@ -39,6 +41,8 @@ struct psi_stats {
 
 struct psi_data {
     struct psi_stats mem_stats[PSI_TYPE_COUNT];
+    struct psi_stats io_stats[PSI_TYPE_COUNT];
+    struct psi_stats cpu_stats[PSI_TYPE_COUNT];
 };
 
 /*
