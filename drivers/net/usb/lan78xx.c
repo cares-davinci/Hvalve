@@ -2724,6 +2724,11 @@ static int lan78xx_stop(struct net_device *net)
 	return 0;
 }
 
+static int lan78xx_linearize(struct sk_buff *skb)
+{
+	return skb_linearize(skb);
+}
+
 static struct sk_buff *lan78xx_tx_prep(struct lan78xx_net *dev,
 				       struct sk_buff *skb, gfp_t flags)
 {
@@ -2735,10 +2740,8 @@ static struct sk_buff *lan78xx_tx_prep(struct lan78xx_net *dev,
 		return NULL;
 	}
 
-	if (skb_linearize(skb)) {
-		dev_kfree_skb_any(skb);
+	if (lan78xx_linearize(skb) < 0)
 		return NULL;
-	}
 
 	tx_cmd_a = (u32)(skb->len & TX_CMD_A_LEN_MASK_) | TX_CMD_A_FCS_;
 
