@@ -3383,7 +3383,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          * reaching OOM.
          */
         kill_reason = NOT_RESPONDING;
-        strncpy(kill_desc, "device is not responding", sizeof(kill_desc));
+        strlcpy(kill_desc, "device is not responding", sizeof(kill_desc));
     } else if (swap_is_low && thrashing > thrashing_limit_pct) {
         /* Page cache is thrashing while swap is low */
         kill_reason = LOW_SWAP_AND_THRASHING;
