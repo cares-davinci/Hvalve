@@ -219,6 +219,7 @@ static struct timespec last_kill_tm;
 /* lmkd configurable parameters */
 static bool is_userdebug_or_eng_build;
 static bool debug_process_killing;
+static float cache_percent;
 static bool enable_pressure_upgrade;
 static int64_t upgrade_pressure;
 static int64_t downgrade_pressure;
@@ -2971,22 +2972,34 @@ struct zone_meminfo {
 
 };
 
+static bool should_consider_cache_free(uint32_t events, enum vmpressure_level level)
+{
+    if (cache_percent) {
+        return events? level != VMPRESS_LEVEL_SUPER_CRITICAL && level != VMPRESS_LEVEL_CRITICAL : true;
+    }
+    return false;
+}
+
 /*
  * Returns lowest breached watermark or WMARK_NONE.
  */
-static enum zone_watermark get_lowest_watermark(union meminfo *mi __unused,
-                                                struct zone_meminfo *zmi)
+static enum zone_watermark get_lowest_watermark(union meminfo *mi,
+                                                struct zone_meminfo *zmi, enum vmpressure_level level, uint32_t events)
 {
     struct zone_watermarks *watermarks = &zmi->watermarks;
     int64_t nr_free_pages = zmi->nr_free_pages - zmi->cma_free;
+    int64_t nr_cached_pages = 0;
 
-    if (nr_free_pages < watermarks->min_wmark) {
+    if (should_consider_cache_free(events, level)) {
+        nr_cached_pages = (int64_t)(cache_percent * mi->field.cached);
+    }
+    if (nr_free_pages + nr_cached_pages < watermarks->min_wmark) {
         return WMARK_MIN;
     }
-    if (nr_free_pages < wbf_effective * watermarks->low_wmark) {
+    if (nr_free_pages + nr_cached_pages * wbf_effective < wbf_effective * watermarks->low_wmark) {
         return WMARK_LOW;
     }
-    if (nr_free_pages < wbf_effective * watermarks->high_wmark) {
+    if (nr_free_pages + nr_cached_pages * wbf_effective < wbf_effective * watermarks->high_wmark) {
         return WMARK_HIGH;
     }
     return WMARK_NONE;
@@ -3334,7 +3347,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     calc_zone_watermarks(&zi, &zone_mem_info, pgskip_deltas);
 
     /* Find out which watermark is breached if any */
-    wmark = get_lowest_watermark(&mi, &zone_mem_info);
+    wmark = get_lowest_watermark(&mi, &zone_mem_info, level, events);
     log_meminfo(&mi, wmark);
     if (level < VMPRESS_LEVEL_CRITICAL && (reclaim == DIRECT_RECLAIM ||
             reclaim == DIRECT_RECLAIM_THROTTLE)) {
@@ -4640,6 +4653,10 @@ static void update_perf_props() {
             PROPERTY_VALUE_MAX);
         wmark_boost_factor = strtod(property, NULL);
         wbf_effective = wmark_boost_factor;
+
+        snprintf(default_value, PROPERTY_VALUE_MAX, "%f", cache_percent);
+        strlcpy(property, perf_get_prop("ro.lmk.cache_percent", default_value).value, PROPERTY_VALUE_MAX);
+        cache_percent = (float)(strtod(property, NULL) * 0.01);
 
         //Update kernel interface during re-init.
         use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
