@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -1436,6 +1437,7 @@ struct hdd_adapter {
 
 #ifdef WLAN_FEATURE_LINK_LAYER_STATS
 	bool is_link_layer_stats_set;
+	uint8_t ll_stats_failure_count;
 #endif
 	uint8_t link_status;
 	uint8_t upgrade_udp_qos_threshold;
@@ -1451,6 +1453,7 @@ struct hdd_adapter {
 
 	/* BITMAP indicating pause reason */
 	uint32_t pause_map;
+	uint32_t subqueue_pause_map;
 	spinlock_t pause_map_lock;
 	qdf_time_t start_time;
 	qdf_time_t last_time;
@@ -1528,6 +1531,8 @@ struct hdd_adapter {
 	uint8_t gro_disallowed[DP_MAX_RX_THREADS];
 	uint8_t gro_flushed[DP_MAX_RX_THREADS];
 	bool handle_feature_update;
+	/* Indicate if TSO and checksum offload features are enabled or not */
+	bool tso_csum_feature_enabled;
 	bool runtime_disable_rx_thread;
 	ol_txrx_rx_fp rx_stack;
 
@@ -2167,7 +2172,7 @@ struct hdd_context {
 	struct sar_limit_cmd_params *sar_cmd_params;
 #ifdef SAR_SAFETY_FEATURE
 	qdf_mc_timer_t sar_safety_timer;
-	qdf_mc_timer_t sar_safety_unsolicited_timer;
+	struct qdf_delayed_work sar_safety_unsolicited_work;
 	qdf_event_t sar_safety_req_resp_event;
 	qdf_atomic_t sar_safety_req_resp_event_in_progress;
 #endif
