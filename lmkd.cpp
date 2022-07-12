@@ -243,6 +243,7 @@ static int thrashing_limit_decay_pct;
 static int thrashing_critical_pct;
 static int swap_util_max;
 static int64_t filecache_min_kb;
+static int64_t stall_limit_critical;
 static bool use_psi_monitors = false;
 static bool enable_preferred_apps =  false;
 static bool last_event_upgraded = false;
@@ -2091,6 +2092,53 @@ static int vmstat_parse(union vmstat *vs) {
     return 0;
 }
 
+static int psi_parse(struct reread_data *file_data, struct psi_stats stats[], bool full) {
+    char *buf;
+    char *save_ptr;
+    char *line;
+
+    if ((buf = reread_file(file_data)) == NULL) {
+        return -1;
+    }
+
+    line = strtok_r(buf, "\n", &save_ptr);
+    if (parse_psi_line(line, PSI_SOME, stats)) {
+        return -1;
+    }
+    if (full) {
+        line = strtok_r(NULL, "\n", &save_ptr);
+        if (parse_psi_line(line, PSI_FULL, stats)) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int psi_parse_mem(struct psi_data *psi_data) {
+    static struct reread_data file_data = {
+        .filename = PSI_PATH_MEMORY,
+        .fd = -1,
+    };
+    return psi_parse(&file_data, psi_data->mem_stats, true);
+}
+
+static int psi_parse_io(struct psi_data *psi_data) {
+    static struct reread_data file_data = {
+        .filename = PSI_PATH_IO,
+        .fd = -1,
+    };
+    return psi_parse(&file_data, psi_data->io_stats, true);
+}
+
+static int psi_parse_cpu(struct psi_data *psi_data) {
+    static struct reread_data file_data = {
+        .filename = PSI_PATH_CPU,
+        .fd = -1,
+    };
+    return psi_parse(&file_data, psi_data->cpu_stats, false);
+}
+
 enum wakeup_reason {
     Event,
     Polling
@@ -2128,7 +2176,8 @@ static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason,
 
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
                          int swap_kb, int kill_reason, union meminfo *mi,
-                         struct wakeup_info *wi, struct timespec *tm) {
+                         struct wakeup_info *wi, struct timespec *tm,
+                         struct psi_data *pd) {
     /* log process information */
     android_log_write_int32(ctx, procp->pid);
     android_log_write_int32(ctx, procp->uid);
@@ -2149,6 +2198,18 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, wi->skipped_wakeups);
     android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
     android_log_write_int32(ctx, (int32_t)mi->field.total_gpu_kb);
+
+    if (pd) {
+        android_log_write_float32(ctx, pd->mem_stats[PSI_SOME].avg10);
+        android_log_write_float32(ctx, pd->mem_stats[PSI_FULL].avg10);
+        android_log_write_float32(ctx, pd->io_stats[PSI_SOME].avg10);
+        android_log_write_float32(ctx, pd->io_stats[PSI_FULL].avg10);
+        android_log_write_float32(ctx, pd->cpu_stats[PSI_SOME].avg10);
+    } else {
+        for (int i = 0; i < 5; i++) {
+            android_log_write_float32(ctx, 0);
+        }
+    }
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
@@ -2480,11 +2541,16 @@ static struct proc *proc_get_heaviest(int oomadj) {
     }
 }
 
-static void set_process_group_and_prio(int pid, const std::vector<std::string>& profiles,
-                                       int prio) {
+
+static void set_process_group_and_prio(uid_t uid, int pid,
+                                       const std::vector<std::string>& profiles, int prio) {
     DIR* d;
     char proc_path[PATH_MAX];
     struct dirent* de;
+
+    if (!SetProcessProfilesCached(uid, pid, profiles)) {
+        ALOGW("Failed to set task profiles for the process (%d) being killed", pid);
+    }
 
     snprintf(proc_path, sizeof(proc_path), "/proc/%d/task", pid);
     if (!(d = opendir(proc_path))) {
@@ -2506,11 +2572,6 @@ static void set_process_group_and_prio(int pid, const std::vector<std::string>& 
 
         if (setpriority(PRIO_PROCESS, t_pid, prio) && errno != ESRCH) {
             ALOGW("Unable to raise priority of killing t_pid (%d): errno=%d", t_pid, errno);
-        }
-
-        if (!SetTaskProfiles(t_pid, profiles, true)) {
-            ALOGW("Failed to set task_profiles on pid(%d) t_pid(%d)", pid, t_pid);
-            continue;
         }
     }
     closedir(d);
@@ -2732,7 +2793,8 @@ struct kill_info {
 
 /* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
 static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_info *ki,
-                            union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
+                            union meminfo *mi, struct wakeup_info *wi, struct timespec *tm,
+                            struct psi_data *pd) {
     int pid = procp->pid;
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
@@ -2793,7 +2855,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         goto out;
     }
 
-    set_process_group_and_prio(pid, {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+    set_process_group_and_prio(uid, pid, {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
                                ANDROID_PRIORITY_HIGHEST);
 
     last_kill_tm = *tm;
@@ -2804,7 +2866,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         kill_st.kill_reason = ki->kill_reason;
         kill_st.thrashing = ki->thrashing;
         kill_st.max_thrashing = ki->max_thrashing;
-        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki->kill_reason, mi, wi, tm);
+        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki->kill_reason, mi, wi, tm, pd);
         ULMK_LOG(I,"Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kB swap; reason: %s", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb,
               ki->kill_desc);
@@ -2812,7 +2874,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         kill_st.kill_reason = NONE;
         kill_st.thrashing = 0;
         kill_st.max_thrashing = 0;
-        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, NONE, mi, wi, tm);
+        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, NONE, mi, wi, tm, pd);
         ULMK_LOG(I,"Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kb swap", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb);
     }
@@ -2843,7 +2905,8 @@ out:
  * Returns size of the killed process.
  */
 static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union meminfo *mi,
-                                 struct wakeup_info *wi, struct timespec *tm) {
+                                 struct wakeup_info *wi, struct timespec *tm,
+                                 struct psi_data *pd) {
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
@@ -2867,7 +2930,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
             if (!procp)
                 break;
 
-            killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm);
+            killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm, pd);
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
@@ -3150,6 +3213,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
     union meminfo mi;
     union vmstat vs;
+    struct psi_data psi_data;
     struct timespec curr_tm;
     int64_t thrashing = 0;
     bool swap_is_low = false;
@@ -3168,6 +3232,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     int64_t workingset_refault_file;
     int64_t pgskip_deltas[VS_PGSKIP_LAST_ZONE - VS_PGSKIP_FIRST_ZONE + 1] = {0};
     struct zoneinfo zi;
+    bool critical_stall = false;
 
     ULMK_LOG(D, "%s pressure event %s", level_name[level], events ?
              "triggered" : "polling check");
@@ -3354,6 +3419,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         last_event_upgraded = true;
     }
 
+    if (!psi_parse_mem(&psi_data)) {
+        critical_stall = psi_data.mem_stats[PSI_FULL].avg10 > (float)stall_limit_critical;
+    }
     /*
      * TODO: move this logic into a separate function
      * Decide if killing a process is necessary and record the reason
@@ -3479,7 +3547,14 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             .thrashing = (int)thrashing,
             .max_thrashing = max_thrashing,
         };
-        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm);
+
+        /* Allow killing perceptible apps if the system is stalled */
+        if (critical_stall) {
+            min_score_adj = 0;
+        }
+        psi_parse_io(&psi_data);
+        psi_parse_cpu(&psi_data);
+        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm, &psi_data);
         if (pages_freed > 0) {
             killing = true;
             max_thrashing = 0;
@@ -3820,7 +3895,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device && per_app_memcg) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm) == 0) {
+        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3851,7 +3926,7 @@ do_kill:
             }
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm);
+        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm, NULL);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
@@ -4713,6 +4788,7 @@ static void update_props() {
 
     // Update Perf Properties
     update_perf_props();
+    stall_limit_critical = GET_LMK_PROPERTY(int64, "stall_limit_critical", 100);
 }
 
 int main(int argc, char **argv) {
