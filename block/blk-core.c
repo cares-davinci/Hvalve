@@ -49,6 +49,8 @@
 #include "blk-pm.h"
 #include "blk-rq-qos.h"
 
+#include <hvalve/hvalve.h>
+
 #ifdef CONFIG_DEBUG_FS
 struct dentry *blk_debugfs_root;
 #endif
@@ -735,8 +737,21 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 			break;
 		}
 
-		if (merged)
+		if (merged) {
+#ifdef ENABLE_HVALVE
+			//printk("CIH: attempt merge: current_foreground_uid: %d, uid: %d, pid: %d\n", get_current_foreground_uid(), (current->cred) ? current->cred->uid.val : -1, current->pid);
+			if (current->cred) {
+				if (rq->req_last_uid != current->cred->uid.val) {
+					rq->merge_cnt++;
+					rq->req_last_uid = current->cred->uid.val;
+				}
+				rq->req_fg_uid = get_current_foreground_uid();
+				if (rq->req_fg_uid == rq->req_last_uid)
+					rq->is_fg_req = FOREGROUND;
+			}
+#endif
 			return true;
+		}
 	}
 
 	return false;

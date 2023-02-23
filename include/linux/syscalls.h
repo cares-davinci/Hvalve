@@ -1227,6 +1227,7 @@ asmlinkage long sys_ni_syscall(void);
 
 #endif /* CONFIG_ARCH_HAS_SYSCALL_WRAPPER */
 
+asmlinkage long sys_hvalve(int comm, int arg1, int arg2, int arg3);
 
 /*
  * Kernel code should not call syscalls (i.e., sys_xyzyyz()) directly.

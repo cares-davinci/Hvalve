@@ -853,8 +853,12 @@ __SYSCALL(__NR_clone3, sys_clone3)
 #define __NR_process_madvise 436
 __SYSCALL(__NR_process_madvise, sys_process_madvise)
 
+#define __NR_hvalve 443
+__SYSCALL(__NR_hvalve, sys_hvalve)
+
 #undef __NR_syscalls
-#define __NR_syscalls 437
+#define __NR_syscalls 444
+
 
 /*
  * 32 bit systems traditionally used different

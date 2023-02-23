@@ -28,6 +28,8 @@
 #include <linux/scatterlist.h>
 #include <linux/blkzoned.h>
 
+#include <hvalve/hvalve.h>
+
 struct module;
 struct scsi_ioctl_command;
 
@@ -149,6 +151,16 @@ struct request {
 	struct bio *biotail;
 
 	struct list_head queuelist;
+
+#ifdef ENABLE_HVALVE
+	int req_last_uid;
+	int req_fg_uid;
+	int is_fg_req;
+	int merge_cnt;
+	int is_launch_state;
+	int is_hit;
+	int is_sram_hit;
+#endif
 
 	/*
 	 * The hash is used inside the scheduler, and killed once the

@@ -9,6 +9,15 @@
  *	Jinyoung Choi <j-young.choi@samsung.com>
  */
 
+
+/* Hvalve Feature Added
+ *
+ * Date: Sep. 22. 2022
+ * Authors:
+ *  Yoona Kim <yoonakim@davinci.snu.ac.kr>
+ *  Inhyuk Choi <ihchoi@davinci.snu.ac.kr>
+ */
+
 #ifndef _UFSHPB_H_
 #define _UFSHPB_H_
 
@@ -53,6 +62,21 @@
 
 #define HPB_SUPPORT_VERSION			0x200
 #define HPB_SUPPORT_LEGACY_VERSION		0x100
+
+
+
+/* Hvalve */
+// Enable for dynamic HPB resizing
+#define Hvalve_Dynamic 1
+
+/* Hvalve */
+// For managing per-app list
+#define NUM_OF_APPS 200
+#define APP_HASH_BITS 8
+#define RGN_HASH_BITS  10
+#define APP_REF_WINDOW 10
+#define NUM_TRACKED_APPS 20
+
 
 enum UFSHPB_MODE {
 	HPB_HOST_CONTROL,
@@ -107,6 +131,9 @@ struct ufshpb_subregion {
 	int srgn_idx;
 	bool is_last;
 
+	/* Hvalve */
+	bool fg;
+
 	/* subregion reads - for host mode */
 	unsigned int reads;
 
@@ -120,6 +147,10 @@ struct ufshpb_region {
 	enum HPB_RGN_STATE rgn_state;
 	int rgn_idx;
 	int srgn_cnt;
+
+	/* Hvalve */
+	bool fg;
+	int last_access_uid;
 
 	/* below information is used by rsp_list */
 	struct list_head list_inact_rgn;
@@ -279,13 +310,104 @@ struct ufshpb_lu {
 	struct kmem_cache *m_page_cache;
 
 	struct list_head list_hpb_lu;
+
+
+	/* Hvalve */
+	DECLARE_HASHTABLE(hpb_app_tbl, APP_HASH_BITS);
+	int cur_fg_uid;
+	int num_tracked_apps;
+	int tot_num_tracked_apps;
+	spinlock_t hpb_app_lock;
+	DECLARE_HASHTABLE(temp_fg_app_ref_tbl, 12);
+	int cur_fg_referenced_rgn_count;
+	bool app_launching;
+	bool launched;
+	bool tracking_mode;
+	struct list_head app_lru;
+
 };
+
+
+/* Hvalve */
+
+struct app_L2P {
+	int rgn;
+	int srgn;
+	int ref_count;
+
+	int precision_state;
+
+	bool launch;
+
+	bool now;
+	int window;
+
+	int birth;
+
+	struct hlist_node l2p_node;
+};
+
+struct hpb_app {
+	int uid;
+
+	int ref_count;
+	int launch_count;
+	int group_count;
+	int birth;
+	int last_ref;
+
+	DECLARE_HASHTABLE(app_L2P_tbl, RGN_HASH_BITS);
+
+	spinlock_t lock;
+
+	struct hlist_node app_node;
+	struct list_head list;
+
+	u64 fg_io_time;
+	u64 fg_io_cnt;
+	u64 fg_hit_cnt;
+	u64 fg_sram_hit_cnt;
+	u64 fg_total_hit_cnt;
+
+	u64 launch_io_time;
+	u64 launch_io_cnt;
+	u64 launch_hit_cnt;
+	u64 launch_sram_hit_cnt;
+	u64 launch_total_hit_cnt;
+
+	u64 bg_io_cnt;
+	u64 bg_hit_cnt;
+	u64 bg_sram_hit_cnt;
+	u64 bg_total_hit_cnt;
+
+	u64 bg_launch_io_time;
+	u64 bg_launch_io_cnt;
+	u64 bg_launch_hit_cnt;
+	u64 bg_launch_sram_hit_cnt;
+	u64 bg_launch_total_hit_cnt;
+};
+
+struct app_ref_rgn_list {
+	struct hlist_node rgn_node;
+
+	int rgn;
+	int srgn;
+
+	int count;
+	bool launch;
+	int hit_miss;
+};
+/**********/
 
 struct ufs_hba;
 struct ufshcd_lrb;
 
 #ifndef CONFIG_SCSI_UFS_HPB
-static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) { return 0; }
+/* Hvalve
+ * Arguments for ufshpb_prep() changed
+ */
+static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, struct request *req, int fg, int UID, int is_launch, int mem_p){ return 0; }
+// static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) { return 0; }
 static void ufshpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) {}
 static void ufshpb_resume(struct ufs_hba *hba) {}
 static void ufshpb_suspend(struct ufs_hba *hba) {}
@@ -300,7 +422,12 @@ static void ufshpb_get_geo_info(struct ufs_hba *hba, u8 *geo_buf) {}
 static void ufshpb_get_dev_info(struct ufs_hba *hba, u8 *desc_buf) {}
 static bool ufshpb_is_legacy(struct ufs_hba *hba) { return false; }
 #else
-int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
+
+/* Hvalve
+ * Arguments for ufshpb_prep() changed
+ */
+void ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, struct request *req, int fg, int UID, int is_launch, int mem_p);
+//int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 void ufshpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 void ufshpb_resume(struct ufs_hba *hba);
 void ufshpb_suspend(struct ufs_hba *hba);

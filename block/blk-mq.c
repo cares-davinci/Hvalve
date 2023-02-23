@@ -40,6 +40,8 @@
 #include "blk-mq-sched.h"
 #include "blk-rq-qos.h"
 
+#include <hvalve/hvalve.h>
+
 static void blk_mq_poll_stats_start(struct request_queue *q);
 static void blk_mq_poll_stats_fn(struct blk_stat_callback *cb);
 
@@ -415,6 +417,15 @@ static struct request *blk_mq_get_request(struct request_queue *q,
 			rq->rq_flags |= RQF_ELVPRIV;
 		}
 	}
+#ifdef ENABLE_HVALVE
+	if (current->cred) {
+		rq->req_last_uid = current->cred->uid.val;
+		rq->is_launch_state = is_launch_state();
+		rq->req_fg_uid = get_current_foreground_uid();
+		rq->is_fg_req = (rq->req_fg_uid == rq->req_last_uid) ? FOREGROUND : BACKGROUND;
+		rq->merge_cnt = 0;
+	}
+#endif
 	data->hctx->queued++;
 	return rq;
 }

@@ -2649,6 +2649,18 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 	}
 	lrbp->req_abort_skip = false;
 
+#ifdef ENABLE_HVALVE
+	struct request *req = cmd->request;
+	if (req->bio && (bio_op(req->bio) == REQ_OP_WRITE || bio_op(req->bio) == REQ_OP_READ)) {
+		int launch_state = is_launch_state();
+		int fg = (req->is_fg_req == FOREGROUND) ? 1 : 0;
+		int UID = get_current_foreground_uid();
+		int mem_p = get_memory_pressure();
+
+		ufshpb_prep(hba, lrbp, req, fg, UID, launch_state, mem_p);
+	}
+#endif
+
 	ufshcd_comp_scsi_upiu(hba, lrbp);
 
 	err = ufshcd_map_sg(hba, lrbp);
