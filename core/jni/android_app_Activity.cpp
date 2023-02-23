@@ -18,7 +18,12 @@
 
 #include <string>
 
+#include <sys/syscall.h>
+#include <sys/types.h>
+
 #include "core_jni_helpers.h"
+
+//#define __NR_hvalve 443
 
 extern "C" void android_dlwarning(void*, void (*)(void*, const char*));
 
@@ -36,10 +41,24 @@ static jstring getDlWarning_native(JNIEnv* env, jobject) {
     return msg.empty() ? nullptr : env->NewStringUTF(msg.c_str());
 }
 
+static void updateForegroundUid_native(JNIEnv* env, jobject clazz, int uid) {
+    syscall(__NR_hvalve, 2, uid, 0, 0);
+}
+
+static void updateCreateUid_native(JNIEnv* env, jobject clazz, int uid) {
+    syscall(__NR_hvalve, 3, uid, 0, 0);
+}
+
 static const JNINativeMethod g_methods[] = {
     { "getDlWarning",
         "()Ljava/lang/String;",
         reinterpret_cast<void*>(getDlWarning_native) },
+    { "updateForegroundUid",
+        "(I)V",
+        reinterpret_cast<void*>(updateForegroundUid_native) },
+    { "updateCreateUid",
+        "(I)V",
+        reinterpret_cast<void*>(updateCreateUid_native) },
 };
 
 static const char* const kActivityPathName = "android/app/Activity";

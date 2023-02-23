@@ -64,6 +64,7 @@ int register_android_server_GpuService(JNIEnv* env);
 int register_android_server_stats_pull_StatsPullAtomService(JNIEnv* env);
 int register_android_server_sensor_SensorService(JavaVM* vm, JNIEnv* env);
 int register_android_server_ActivityTriggerService(JNIEnv* env);
+int register_android_server_wm_ActivityStarter(JNIEnv* env);
 };
 
 using namespace android;
@@ -121,5 +122,6 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void* /* reserved */)
     register_android_server_stats_pull_StatsPullAtomService(env);
     register_android_server_sensor_SensorService(vm, env);
     register_android_server_ActivityTriggerService(env);
+    register_android_server_wm_ActivityStarter(env);
     return JNI_VERSION_1_4;
 }

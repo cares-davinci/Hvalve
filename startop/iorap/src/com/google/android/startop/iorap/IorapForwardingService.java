@@ -175,7 +175,8 @@ public class IorapForwardingService extends SystemService {
             getMendelFlag("iorap_readahead_enable", "iorapd.readahead.enable", false);
         // Same as the property in iorapd.rc -- disabling this will mean the 'iorapd' binder process
         // never comes up, so all binder connections will fail indefinitely.
-        return IS_ENABLED && (isTracingEnabled || isReadAheadEnabled);
+        // return IS_ENABLED && (isTracingEnabled || isReadAheadEnabled);
+        return false;
     }
 
     private boolean getMendelFlag(String mendelFlag, String sysProperty, boolean defaultValue) {

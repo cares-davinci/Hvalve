@@ -98,6 +98,8 @@ import android.util.DisplayMetrics;
 import android.util.proto.ProtoOutputStream;
 import android.view.Display;
 
+import android.util.Log;
+
 import com.android.internal.compat.CompatibilityChangeConfig;
 import com.android.internal.util.HexDump;
 import com.android.internal.util.MemInfoReader;
@@ -654,6 +656,7 @@ final class ActivityManagerShellCommand extends ShellCommand {
                 }
                 if (result.totalTime >= 0) {
                     pw.println("TotalTime: " + result.totalTime);
+                    Log.i("CIH", "am end");
                 }
                 pw.println("WaitTime: " + (endTime-startTime));
                 pw.println("Complete");

@@ -1029,6 +1029,9 @@ public class Activity extends ContextThemeWrapper
         return mIntent;
     }
 
+    private static native void updateForegroundUid(int uid);
+    private static native void updateCreateUid(int uid);
+
     /**
      * Change the intent returned by {@link #getIntent}.  This holds a
      * reference to the given intent; it does not copy it.  Often used in
@@ -1619,6 +1622,10 @@ public class Activity extends ContextThemeWrapper
         mRestoredFromBundle = savedInstanceState != null;
         mCalled = true;
 
+        int uid = mApplication.getApplicationInfo().uid;
+        updateCreateUid(uid);
+        String name = mComponent.getClassName();
+        Log.i("CIH", "ActivityName: " + name + " create, uid: " + String.valueOf(uid));
     }
 
     /**
@@ -1952,6 +1959,13 @@ public class Activity extends ContextThemeWrapper
         dispatchActivityResumed();
         mActivityTransitionState.onResume(this);
         enableAutofillCompatibilityIfNeeded();
+
+        /*
+        int uid = mApplication.getApplicationInfo().uid;
+        String name = mComponent.getClassName();
+        updateCreateUid(uid);
+        Log.i("CIH", "ActivityName: " + name + " start, uid: " + String.valueOf(uid));
+        */
         if (mAutoFillResetNeeded) {
             if (!mAutoFillIgnoreFirstResumePause) {
                 View focus = getCurrentFocus();

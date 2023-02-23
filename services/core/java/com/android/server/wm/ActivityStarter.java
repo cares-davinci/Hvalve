@@ -135,6 +135,12 @@ import java.io.PrintWriter;
 import java.text.DateFormat;
 import java.util.Date;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.Scanner;
+import java.util.HashMap;
+
 /**
  * Controller for interpreting how and then launching an activity.
  *
@@ -548,6 +554,30 @@ class ActivityStarter {
         }
     }
 
+    private static HashMap<String, Integer>uid_list;
+
+    public static void read_uidlist() {
+        try {
+            Scanner scanner = new Scanner(new File("/data/system/packages.list"));
+            uid_list = new HashMap<String, Integer>(150);
+
+            while (scanner.hasNext()) {
+                String str = scanner.nextLine();
+                String[] split_str = str.split(" ");
+                int uid = Integer.parseInt(split_str[1]);
+                uid_list.put(split_str[0], uid);
+                if (split_str[0].contains("launcher3"))
+                    getLauncher(uid);
+            }
+        }
+        catch (FileNotFoundException e) {
+            Slog.i("CIH", "File not found");
+        }
+        catch (IOException e) {
+            Slog.i("CIH", "IO exception");
+        }
+    }
+
     ActivityStarter(ActivityStartController controller, ActivityTaskManagerService service,
             ActivityTaskSupervisor supervisor, ActivityStartInterceptor interceptor) {
         mController = controller;
@@ -557,6 +587,8 @@ class ActivityStarter {
         mInterceptor = interceptor;
         reset(true);
         mPerf = new BoostFramework();
+        read_uidlist();
+
     }
 
     /**
@@ -813,6 +845,8 @@ class ActivityStarter {
         }
         return res;
     }
+    private static native void startLaunch(String activity_name, int uid);
+    private static native void getLauncher(int launcher_uid);
 
     /**
      * Executing activity start request and starts the journey of starting an activity. Here
@@ -871,6 +905,15 @@ class ActivityStarter {
         if (err == ActivityManager.START_SUCCESS) {
             Slog.i(TAG, "START u" + userId + " {" + intent.toShortString(true, true, true, false)
                     + "} from uid " + callingUid);
+            String activity_name = intent.getComponent().flattenToShortString();
+
+
+            String app_name = activity_name.split("/")[0];
+            Integer callee_uid = uid_list.get(app_name);
+            if (callee_uid != null) {
+                int Call_uid = callee_uid.intValue();
+                startLaunch(activity_name, Call_uid);
+            }
         }
 
         ActivityRecord sourceRecord = null;
