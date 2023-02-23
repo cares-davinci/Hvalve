@@ -60,6 +60,9 @@
 #define BPF_FD_JUST_USE_INT
 #include "BpfSyscallWrappers.h"
 
+#include <meminfo/pageacct.h>
+#include <meminfo/procmeminfo.h>
+
 /*
  * Define LMKD_TRACE_KILLS to record lmkd kills in kernel traces
  * to profile and correlate with OOM kills
@@ -99,6 +102,26 @@
 #define PERCEPTIBLE_APP_ADJ 200
 #define VISIBLE_APP_ADJ 100
 #define PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ 50
+
+#define INVALID_ADJ -10000
+#define UNKNOWN_ADJ 1001
+#define CACHED_APP_LMK_FIRST_ADJ 950
+#define CACHED_APP_MIN_ADJ 900
+#define SERVICE_B_ADJ 800
+#define PREVIOUS_APP_ADJ 700
+#define HOME_APP_ADJ 600
+#define SERVICE_ADJ 500
+#define HEAVY_WEIGHT_APP_ADJ 400
+#define BACKUP_APP_ADJ 300
+#define PERCEPTIBLE_LOW_APP_ADJ 250
+#define PERCEPTIBLE_MEDIUM_APP_ADJ 225
+#define FOREGROUND_APP_ADJ 0
+#define PERSISTENT_SERVICE_ADJ -700
+#define PERSISTENT_PROC_ADJ -800
+#define NATIVE_ADJ -1000
+#define NUM_OOM_LEVEL 17
+
+static int kill_cnt_hist[NUM_OOM_LEVEL] = { 0, };
 
 /* Android Logger event logtags (see event.logtags) */
 #define KILLINFO_LOG_TAG 10195355
@@ -200,6 +223,9 @@ static const char *level_name[] = {
     "super critical",
 };
 
+//#define __NR_hvalve 443
+static int hvalve_kill_cnt[VMPRESS_LEVEL_COUNT] = { 0,};
+
 struct {
     int64_t min_nr_free_pages; /* recorded but not used yet */
     int64_t max_nr_free_pages;
@@ -272,6 +298,14 @@ enum polling_update {
     POLLING_PAUSE,
     POLLING_RESUME,
 };
+
+enum hvalve_state {
+    IDLE,
+    TRIGGER,
+    KILL_PENDING,
+};
+
+static enum hvalve_state hvalve_kill_pending = IDLE;
 
 /*
  * Data used for periodic polling for the memory state of the device.
@@ -1411,7 +1445,7 @@ static void cmd_procremove(LMKD_CTRL_PACKET packet, struct ucred *cred) {
     struct proc *procp;
 
     lmkd_pack_get_procremove(packet, &params);
-
+    //ALOGI("CMD_PROCREMOVE");
     if (use_inkernel_interface) {
         /*
          * Perform an extra check before the pid is removed, after which it
@@ -1451,6 +1485,8 @@ static void cmd_procpurge(struct ucred *cred) {
     struct proc *procp;
     struct proc *next;
 
+    ALOGI("CMD_PROCPURGE");
+
     if (use_inkernel_interface) {
         stats_purge_tasknames();
         return;
@@ -1473,6 +1509,8 @@ static void cmd_subscribe(int dsock_idx, LMKD_CTRL_PACKET packet) {
     struct lmk_subscribe params;
 
     lmkd_pack_get_subscribe(packet, &params);
+
+    ALOGI("CMD_SUBSCRIBE");
     data_sock[dsock_idx].async_event_mask |= 1 << params.evt_type;
 }
 
@@ -1534,6 +1572,7 @@ static int cmd_getkillcnt(LMKD_CTRL_PACKET packet) {
 
     lmkd_pack_get_getkillcnt(packet, &params);
 
+    ALOGI("CMD_GETKILLCNT");
     return get_killcnt(params.min_oomadj, params.max_oomadj);
 }
 
@@ -1580,6 +1619,7 @@ static void cmd_target(int ntargets, LMKD_CTRL_PACKET packet) {
         }
     }
 
+    ALOGI("CMD_TARGET");
     lowmem_targets_size = ntargets;
 
     /* Override the last extra comma */
@@ -2583,7 +2623,7 @@ static void set_process_group_and_prio(uid_t uid, int pid,
  * list may be obsolete. This case is handled by the loop in
  * find_and_kill_processes.
  */
-static long proc_get_script(void)
+static long proc_get_script(enum vmpressure_level level)
 {
     static DIR* d = NULL;
     struct dirent* de;
@@ -2669,6 +2709,7 @@ repeat:
         } else {
             ULMK_LOG(I, "Kill native with pid %u, oom_adj %d, to free %ld pages",
                             pid, oomadj, tasksize);
+            hvalve_kill_cnt[level]++;
         }
 
         return tasksize;
@@ -2807,6 +2848,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int64_t rss_kb;
     int64_t swap_kb;
     static char buf[PAGE_SIZE];
+    int oomadj_score;
 
     if (!read_proc_status(pid, buf, sizeof(buf))) {
         goto out;
@@ -2825,6 +2867,16 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     }
     if (!parse_status_tag(buf, PROC_STATUS_SWAP_FIELD, &swap_kb)) {
         goto out;
+    }
+    if (procp) {
+        android::meminfo::ProcMemInfo proc_mem(pid);
+        const android::meminfo::MemUsage& usage = proc_mem.Usage();
+        ALOGI("LMKD_STAT: pid: %d rss: %lu uss: %lu", procp->pid, usage.rss, usage.uss);
+    }
+    if (hvalve_kill_pending != KILL_PENDING) {
+        hvalve_kill_pending = KILL_PENDING;
+        syscall(__NR_hvalve, 5, procp->uid, rss_kb, procp->oomadj);
+        return -987654321;
     }
 
     taskname = proc_get_name(pid, buf, sizeof(buf));
@@ -2845,6 +2897,50 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         start_wait_for_proc_kill(pidfd);
         r = pidfd_send_signal(pidfd, SIGKILL, NULL, 0);
     }
+
+    oomadj_score = procp->oomadj;
+
+    if (oomadj_score >= CACHED_APP_MIN_ADJ)
+        kill_cnt_hist[0]++;
+    else if (oomadj_score >= SERVICE_B_ADJ)
+        kill_cnt_hist[1]++;
+    else if (oomadj_score >= PREVIOUS_APP_ADJ)
+        kill_cnt_hist[2]++;
+    else if (oomadj_score >= HOME_APP_ADJ)
+        kill_cnt_hist[3]++;
+    else if (oomadj_score >= SERVICE_ADJ)
+        kill_cnt_hist[4]++;
+    else if (oomadj_score >= HEAVY_WEIGHT_APP_ADJ)
+        kill_cnt_hist[5]++;
+    else if (oomadj_score >= BACKUP_APP_ADJ)
+        kill_cnt_hist[6]++;
+    else if (oomadj_score >= PERCEPTIBLE_LOW_APP_ADJ)
+        kill_cnt_hist[7]++;
+    else if (oomadj_score >= PERCEPTIBLE_MEDIUM_APP_ADJ)
+        kill_cnt_hist[8]++;
+    else if (oomadj_score >= PERCEPTIBLE_APP_ADJ)
+        kill_cnt_hist[9]++;
+    else if (oomadj_score >= VISIBLE_APP_ADJ)
+        kill_cnt_hist[10]++;
+    else if (oomadj_score >= PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ)
+        kill_cnt_hist[11]++;
+    else if (oomadj_score >= FOREGROUND_APP_ADJ)
+        kill_cnt_hist[12]++;
+    else if (oomadj_score >= PERSISTENT_SERVICE_ADJ)
+        kill_cnt_hist[13]++;
+    else if (oomadj_score >= PERSISTENT_PROC_ADJ)
+        kill_cnt_hist[14]++;
+    else if (oomadj_score >= SYSTEM_ADJ)
+        kill_cnt_hist[15]++;
+    else
+        kill_cnt_hist[16]++;
+
+    ULMK_LOG(I,"KILL_HIST: pid: %d, uid: %d, hist: %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d",
+            pid, uid,
+            kill_cnt_hist[0], kill_cnt_hist[1], kill_cnt_hist[2], kill_cnt_hist[3], kill_cnt_hist[4],
+            kill_cnt_hist[5], kill_cnt_hist[6], kill_cnt_hist[7], kill_cnt_hist[8], kill_cnt_hist[9],
+            kill_cnt_hist[10], kill_cnt_hist[11], kill_cnt_hist[12], kill_cnt_hist[13], kill_cnt_hist[14],
+            kill_cnt_hist[15], kill_cnt_hist[16]);
 
     TRACE_KILL_END();
 
@@ -2906,7 +3002,7 @@ out:
  */
 static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union meminfo *mi,
                                  struct wakeup_info *wi, struct timespec *tm,
-                                 struct psi_data *pd) {
+                                 struct psi_data *pd, enum vmpressure_level level) {
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
@@ -2932,20 +3028,24 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
 
             killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm, pd);
             if (killed_size >= 0) {
+                hvalve_kill_pending = TRIGGER;
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
                     stats_write_lmk_state_changed(STATE_START);
                 }
                 break;
+            } else if (killed_size == -987654321) {
+                return 0;
             }
         }
         if (killed_size) {
+            hvalve_kill_cnt[level]++;
             break;
         }
     }
 
     if (!killed_size && !min_score_adj && is_userdebug_or_eng_build) {
-        killed_size = proc_get_script();
+        killed_size = proc_get_script(level);
     }
 
     if (lmk_state_change_start) {
@@ -3234,8 +3334,21 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     struct zoneinfo zi;
     bool critical_stall = false;
 
+    struct timespec start_tm;
+    struct timespec end_tm;
+
+    clock_gettime(CLOCK_MONOTONIC, &start_tm);
+
+    ALOGI("CIH: mp_event_psi: %s pressure event %s, low: %d mid: %d critical: %d super critical: %d",
+        level_name[level], events ? "triggered" : "polling check", hvalve_kill_cnt[0], hvalve_kill_cnt[1], hvalve_kill_cnt[2], hvalve_kill_cnt[3]);
+
     ULMK_LOG(D, "%s pressure event %s", level_name[level], events ?
              "triggered" : "polling check");
+
+    if (events > 0) {
+        hvalve_kill_pending = TRIGGER;
+        syscall(__NR_hvalve, 4, level, 0, 0);
+    }
 
     if (events &&
        (!poll_params->poll_handler || data >= poll_params->poll_handler->data)) {
@@ -3554,7 +3667,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         }
         psi_parse_io(&psi_data);
         psi_parse_cpu(&psi_data);
-        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm, &psi_data);
+        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm, &psi_data, level);
         if (pages_freed > 0) {
             killing = true;
             max_thrashing = 0;
@@ -3579,6 +3692,10 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         ULMK_LOG(D, "Not killing for %s pressure event %s", level_name[level],
                  events ? "trigger" : "polling check");
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &end_tm);
+
+    ALOGI("LMKD_ELAPSED_TIME: %lld", (1000000000LL * (end_tm.tv_sec - start_tm.tv_sec) + (end_tm.tv_nsec - start_tm.tv_nsec))/1000);
 
 no_kill:
     /* Do not poll if kernel supports pidfd waiting */
@@ -3704,6 +3821,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     if (debug_process_killing) {
         ALOGI("%s memory pressure event is triggered", level_name[level]);
     }
+
+    ALOGI("CIH: mp_event_common enter");
 
     if (!use_psi_monitors) {
         /*
@@ -3861,6 +3980,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 
     // Calculate percent for swappinness.
     mem_pressure = (mem_usage * 100) / memsw_usage;
+    ALOGI("CIH: memory pressure: %ld%%, level: %s", mem_pressure, level_name[level]);
 
     if (enable_pressure_upgrade && level != VMPRESS_LEVEL_CRITICAL) {
         // We are swapping too much.
@@ -3893,9 +4013,10 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     }
 
 do_kill:
+    ALOGI("CIH: do_kill: level: %s", level_name[level]);
     if (low_ram_device && per_app_memcg) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
+        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL, level) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3926,7 +4047,7 @@ do_kill:
             }
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm, NULL);
+        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm, NULL, level);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
@@ -4347,6 +4468,7 @@ static void call_handler(struct event_handler_info* handler_info,
     case POLLING_DO_NOT_CHANGE:
         if (get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > psi_window_size_ms) {
             /* Polled for the duration of PSI window, time to stop */
+            hvalve_kill_pending = IDLE;
             poll_params->poll_handler = NULL;
             poll_params->paused_handler = NULL;
             s_crit_event = false;
@@ -4527,6 +4649,7 @@ static void mainloop(void) {
         }
 
         /* Second pass to handle all other events */
+        int num_events = 0;
         for (i = 0, evt = &events[0]; i < nevents; ++i, evt++) {
             if (evt->events & EPOLLERR) {
                 ALOGD("EPOLLERR on event #%d", i);
@@ -4543,9 +4666,13 @@ static void mainloop(void) {
                      handler_info->data == VMPRESS_LEVEL_CRITICAL)) {
                     check_cont_lmkd_events(handler_info->data);
                 }
+                if (handler_info->handler == mp_event_psi)
+                    num_events++;
                 call_handler(handler_info, &poll_params, evt->events);
             }
         }
+        if (num_events > 0)
+            ALOGD("Number of Events: %d", num_events);
     }
 }
 

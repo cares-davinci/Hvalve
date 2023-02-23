@@ -18,6 +18,8 @@ cc_binary {
         "liblog",
         "libprocessgroup",
         "libpsi",
+        "libbase",
+        "libmeminfo",
     ],
     static_libs: [
         "libstatslogc",
