@@ -1,0 +1,326 @@
+From e376e77eb278464e1680d8878e4091aa24abf016 Mon Sep 17 00:00:00 2001
+From: Daniel9710 <dlsgur9710@gmail.com>
+Date: Thu, 23 Feb 2023 09:52:57 +0900
+Subject: [PATCH] Initial commit for Hvalve
+
+Signed-off-by: Daniel9710 <dlsgur9710@gmail.com>
+---
+ boot/hiddenapi/hiddenapi-max-target-o.txt     |  2 +
+ core/java/android/app/Activity.java           | 14 +++++
+ core/jni/android_app_Activity.cpp             | 19 +++++++
+ .../am/ActivityManagerShellCommand.java       |  3 +
+ .../android/server/wm/ActivityStarter.java    | 43 +++++++++++++++
+ services/core/jni/Android.bp                  |  1 +
+ .../com_android_server_wm_ActivityStarter.cpp | 55 +++++++++++++++++++
+ services/core/jni/onload.cpp                  |  2 +
+ .../startop/iorap/IorapForwardingService.java |  3 +-
+ 9 files changed, 141 insertions(+), 1 deletion(-)
+ create mode 100644 services/core/jni/com_android_server_wm_ActivityStarter.cpp
+
+diff --git a/boot/hiddenapi/hiddenapi-max-target-o.txt b/boot/hiddenapi/hiddenapi-max-target-o.txt
+index 0ec918b11723..add7790e1718 100644
+--- a/boot/hiddenapi/hiddenapi-max-target-o.txt
++++ b/boot/hiddenapi/hiddenapi-max-target-o.txt
+@@ -1320,6 +1320,8 @@ Landroid/app/Activity;->getActivityThread()Landroid/app/ActivityThread;
+ Landroid/app/Activity;->getAutofillClient()Landroid/view/autofill/AutofillManager$AutofillClient;
+ Landroid/app/Activity;->getAutofillManager()Landroid/view/autofill/AutofillManager;
+ Landroid/app/Activity;->getDlWarning()Ljava/lang/String;
++Landroid/app/Activity;->updateForegroundUid(I)V
++Landroid/app/Activity;->updateCreateUid(I)V
+ Landroid/app/Activity;->getLastNonConfigurationChildInstances()Ljava/util/HashMap;
+ Landroid/app/Activity;->getNextAutofillId()I
+ Landroid/app/Activity;->HAS_CURENT_PERMISSIONS_REQUEST_KEY:Ljava/lang/String;
+diff --git a/core/java/android/app/Activity.java b/core/java/android/app/Activity.java
+index f453ba16043c..8749c003cfa4 100644
+--- a/core/java/android/app/Activity.java
++++ b/core/java/android/app/Activity.java
+@@ -1029,6 +1029,9 @@ public class Activity extends ContextThemeWrapper
+         return mIntent;
+     }
+ 
++    private static native void updateForegroundUid(int uid);
++    private static native void updateCreateUid(int uid);
++
+     /**
+      * Change the intent returned by {@link #getIntent}.  This holds a
+      * reference to the given intent; it does not copy it.  Often used in
+@@ -1619,6 +1622,10 @@ public class Activity extends ContextThemeWrapper
+         mRestoredFromBundle = savedInstanceState != null;
+         mCalled = true;
+ 
++        int uid = mApplication.getApplicationInfo().uid;
++        updateCreateUid(uid);
++        String name = mComponent.getClassName();
++        Log.i("CIH", "ActivityName: " + name + " create, uid: " + String.valueOf(uid));
+     }
+ 
+     /**
+@@ -1952,6 +1959,13 @@ public class Activity extends ContextThemeWrapper
+         dispatchActivityResumed();
+         mActivityTransitionState.onResume(this);
+         enableAutofillCompatibilityIfNeeded();
++
++        /*
++        int uid = mApplication.getApplicationInfo().uid;
++        String name = mComponent.getClassName();
++        updateCreateUid(uid);
++        Log.i("CIH", "ActivityName: " + name + " start, uid: " + String.valueOf(uid));
++        */
+         if (mAutoFillResetNeeded) {
+             if (!mAutoFillIgnoreFirstResumePause) {
+                 View focus = getCurrentFocus();
+diff --git a/core/jni/android_app_Activity.cpp b/core/jni/android_app_Activity.cpp
+index 56f4f01f8c80..8390199886cd 100644
+--- a/core/jni/android_app_Activity.cpp
++++ b/core/jni/android_app_Activity.cpp
+@@ -18,8 +18,13 @@
+ 
+ #include <string>
+ 
++#include <sys/syscall.h>
++#include <sys/types.h>
++
+ #include "core_jni_helpers.h"
+ 
++//#define __NR_hvalve 443
++
+ extern "C" void android_dlwarning(void*, void (*)(void*, const char*));
+ 
+ namespace android
+@@ -36,10 +41,24 @@ static jstring getDlWarning_native(JNIEnv* env, jobject) {
+     return msg.empty() ? nullptr : env->NewStringUTF(msg.c_str());
+ }
+ 
++static void updateForegroundUid_native(JNIEnv* env, jobject clazz, int uid) {
++    syscall(__NR_hvalve, 2, uid, 0, 0);
++}
++
++static void updateCreateUid_native(JNIEnv* env, jobject clazz, int uid) {
++    syscall(__NR_hvalve, 3, uid, 0, 0);
++}
++
+ static const JNINativeMethod g_methods[] = {
+     { "getDlWarning",
+         "()Ljava/lang/String;",
+         reinterpret_cast<void*>(getDlWarning_native) },
++    { "updateForegroundUid",
++        "(I)V",
++        reinterpret_cast<void*>(updateForegroundUid_native) },
++    { "updateCreateUid",
++        "(I)V",
++        reinterpret_cast<void*>(updateCreateUid_native) },
+ };
+ 
+ static const char* const kActivityPathName = "android/app/Activity";
+diff --git a/services/core/java/com/android/server/am/ActivityManagerShellCommand.java b/services/core/java/com/android/server/am/ActivityManagerShellCommand.java
+index ea28117a6a3d..c66cf4838f95 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerShellCommand.java
++++ b/services/core/java/com/android/server/am/ActivityManagerShellCommand.java
+@@ -98,6 +98,8 @@ import android.util.DisplayMetrics;
+ import android.util.proto.ProtoOutputStream;
+ import android.view.Display;
+ 
++import android.util.Log;
++
+ import com.android.internal.compat.CompatibilityChangeConfig;
+ import com.android.internal.util.HexDump;
+ import com.android.internal.util.MemInfoReader;
+@@ -654,6 +656,7 @@ final class ActivityManagerShellCommand extends ShellCommand {
+                 }
+                 if (result.totalTime >= 0) {
+                     pw.println("TotalTime: " + result.totalTime);
++                    Log.i("CIH", "am end");
+                 }
+                 pw.println("WaitTime: " + (endTime-startTime));
+                 pw.println("Complete");
+diff --git a/services/core/java/com/android/server/wm/ActivityStarter.java b/services/core/java/com/android/server/wm/ActivityStarter.java
+index d6f93ce491b3..de333139dc79 100755
+--- a/services/core/java/com/android/server/wm/ActivityStarter.java
++++ b/services/core/java/com/android/server/wm/ActivityStarter.java
+@@ -135,6 +135,12 @@ import java.io.PrintWriter;
+ import java.text.DateFormat;
+ import java.util.Date;
+ 
++import java.io.File;
++import java.io.FileNotFoundException;
++import java.io.IOException;
++import java.util.Scanner;
++import java.util.HashMap;
++
+ /**
+  * Controller for interpreting how and then launching an activity.
+  *
+@@ -548,6 +554,30 @@ class ActivityStarter {
+         }
+     }
+ 
++    private static HashMap<String, Integer>uid_list;
++
++    public static void read_uidlist() {
++        try {
++            Scanner scanner = new Scanner(new File("/data/system/packages.list"));
++            uid_list = new HashMap<String, Integer>(150);
++
++            while (scanner.hasNext()) {
++                String str = scanner.nextLine();
++                String[] split_str = str.split(" ");
++                int uid = Integer.parseInt(split_str[1]);
++                uid_list.put(split_str[0], uid);
++                if (split_str[0].contains("launcher3"))
++                    getLauncher(uid);
++            }
++        }
++        catch (FileNotFoundException e) {
++            Slog.i("CIH", "File not found");
++        }
++        catch (IOException e) {
++            Slog.i("CIH", "IO exception");
++        }
++    }
++
+     ActivityStarter(ActivityStartController controller, ActivityTaskManagerService service,
+             ActivityTaskSupervisor supervisor, ActivityStartInterceptor interceptor) {
+         mController = controller;
+@@ -557,6 +587,8 @@ class ActivityStarter {
+         mInterceptor = interceptor;
+         reset(true);
+         mPerf = new BoostFramework();
++        read_uidlist();
++
+     }
+ 
+     /**
+@@ -813,6 +845,8 @@ class ActivityStarter {
+         }
+         return res;
+     }
++    private static native void startLaunch(String activity_name, int uid);
++    private static native void getLauncher(int launcher_uid);
+ 
+     /**
+      * Executing activity start request and starts the journey of starting an activity. Here
+@@ -871,6 +905,15 @@ class ActivityStarter {
+         if (err == ActivityManager.START_SUCCESS) {
+             Slog.i(TAG, "START u" + userId + " {" + intent.toShortString(true, true, true, false)
+                     + "} from uid " + callingUid);
++            String activity_name = intent.getComponent().flattenToShortString();
++
++
++            String app_name = activity_name.split("/")[0];
++            Integer callee_uid = uid_list.get(app_name);
++            if (callee_uid != null) {
++                int Call_uid = callee_uid.intValue();
++                startLaunch(activity_name, Call_uid);
++            }
+         }
+ 
+         ActivityRecord sourceRecord = null;
+diff --git a/services/core/jni/Android.bp b/services/core/jni/Android.bp
+index 34c0cdef19a1..45890b55d8a4 100644
+--- a/services/core/jni/Android.bp
++++ b/services/core/jni/Android.bp
+@@ -72,6 +72,7 @@ cc_library_static {
+         "com_android_server_pm_PackageManagerShellCommandDataLoader.cpp",
+         "com_android_server_sensor_SensorService.cpp",
+         "com_android_server_activityTriggerService.cpp",
++        "com_android_server_wm_ActivityStarter.cpp",
+         "onload.cpp",
+         ":lib_cachedAppOptimizer_native",
+         ":lib_networkStatsFactory_native",
+diff --git a/services/core/jni/com_android_server_wm_ActivityStarter.cpp b/services/core/jni/com_android_server_wm_ActivityStarter.cpp
+new file mode 100644
+index 000000000000..c844bd42a2d9
+--- /dev/null
++++ b/services/core/jni/com_android_server_wm_ActivityStarter.cpp
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2007 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <jni.h>
++#include <nativehelper/JNIHelp.h>
++
++#include <sys/syscall.h>
++#include <sys/types.h>
++
++//#define __NR_hvalve 443
++
++namespace android {
++
++static void startLaunch_native(JNIEnv* env, jobject clazz, jstring str, int uid) {
++    const char *cString = env->GetStringUTFChars(str, nullptr);
++
++    syscall(__NR_bpf, 9878, cString, uid);
++    env->ReleaseStringUTFChars(str, cString);
++}
++
++static void getLauncher_native(JNIEnv* env, jobject clazz, int launcher_uid) {
++    syscall(__NR_hvalve, 1, launcher_uid, 0, 0);
++}
++
++/*
++ * JNI registration.
++ */
++static const JNINativeMethod gMethods[] = {
++        /* name, signature, funcPtr */
++    { "startLaunch", "(Ljava/lang/String;I)V",
++        reinterpret_cast<void*>(startLaunch_native) },
++    { "getLauncher", "(I)V",
++        reinterpret_cast<void*>(getLauncher_native) },
++};
++
++int register_android_server_wm_ActivityStarter(JNIEnv* env)
++{
++    return jniRegisterNativeMethods(env, "com/android/server/wm/ActivityStarter",
++            gMethods, NELEM(gMethods));
++}
++
++}; // namespace android
+diff --git a/services/core/jni/onload.cpp b/services/core/jni/onload.cpp
+index 237dbcd27b4e..42112eba2c59 100644
+--- a/services/core/jni/onload.cpp
++++ b/services/core/jni/onload.cpp
+@@ -64,6 +64,7 @@ int register_android_server_GpuService(JNIEnv* env);
+ int register_android_server_stats_pull_StatsPullAtomService(JNIEnv* env);
+ int register_android_server_sensor_SensorService(JavaVM* vm, JNIEnv* env);
+ int register_android_server_ActivityTriggerService(JNIEnv* env);
++int register_android_server_wm_ActivityStarter(JNIEnv* env);
+ };
+ 
+ using namespace android;
+@@ -121,5 +122,6 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void* /* reserved */)
+     register_android_server_stats_pull_StatsPullAtomService(env);
+     register_android_server_sensor_SensorService(vm, env);
+     register_android_server_ActivityTriggerService(env);
++    register_android_server_wm_ActivityStarter(env);
+     return JNI_VERSION_1_4;
+ }
+diff --git a/startop/iorap/src/com/google/android/startop/iorap/IorapForwardingService.java b/startop/iorap/src/com/google/android/startop/iorap/IorapForwardingService.java
+index 1a0e5269d51a..b8c22e80986e 100644
+--- a/startop/iorap/src/com/google/android/startop/iorap/IorapForwardingService.java
++++ b/startop/iorap/src/com/google/android/startop/iorap/IorapForwardingService.java
+@@ -175,7 +175,8 @@ public class IorapForwardingService extends SystemService {
+             getMendelFlag("iorap_readahead_enable", "iorapd.readahead.enable", false);
+         // Same as the property in iorapd.rc -- disabling this will mean the 'iorapd' binder process
+         // never comes up, so all binder connections will fail indefinitely.
+-        return IS_ENABLED && (isTracingEnabled || isReadAheadEnabled);
++        // return IS_ENABLED && (isTracingEnabled || isReadAheadEnabled);
++        return false;
+     }
+ 
+     private boolean getMendelFlag(String mendelFlag, String sysProperty, boolean defaultValue) {
+-- 
+2.39.2
+

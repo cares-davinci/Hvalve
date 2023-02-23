@@ -1,0 +1,1421 @@
+From a06306adb385cfd525bdb86ab0e7b8f51bc32a73 Mon Sep 17 00:00:00 2001
+From: YoonaKim95 <yoonakim95@gmail.com>
+Date: Thu, 23 Feb 2023 19:57:11 +0900
+Subject: [PATCH] Initial commit for Hvalve
+
+Signed-off-by: YoonaKim95 <yoonakim95@gmail.com>
+---
+ Makefile                          |   2 +-
+ arch/arm64/include/asm/unistd.h   |   2 +-
+ arch/arm64/include/asm/unistd32.h |   3 +
+ block/blk-core.c                  |  17 +-
+ block/blk-mq.c                    |  11 +
+ defconfig                         |   1 +
+ drivers/scsi/ufs/ufshcd.c         |  12 +
+ drivers/scsi/ufs/ufshcd.h         |   4 +
+ drivers/scsi/ufs/ufshpb.c         | 591 +++++++++++++++++++++++++++++-
+ drivers/scsi/ufs/ufshpb.h         | 131 ++++++-
+ hvalve/Makefile                   |   1 +
+ hvalve/syscall.c                  | 105 ++++++
+ include/hvalve/hvalve.h           |  30 ++
+ include/linux/blkdev.h            |  12 +
+ include/linux/syscalls.h          |   1 +
+ include/uapi/asm-generic/unistd.h |   6 +-
+ kernel/Makefile                   |   2 +-
+ kernel/hvalve.c                   |  39 ++
+ 18 files changed, 951 insertions(+), 19 deletions(-)
+ create mode 100644 hvalve/Makefile
+ create mode 100644 hvalve/syscall.c
+ create mode 100644 include/hvalve/hvalve.h
+ create mode 100644 kernel/hvalve.c
+
+diff --git a/Makefile b/Makefile
+index e166cc1caf73..c0ebfa855290 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1122,7 +1122,7 @@ PHONY += prepare0
+ export MODORDER := $(extmod-prefix)modules.order
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ hvalve/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/arch/arm64/include/asm/unistd.h b/arch/arm64/include/asm/unistd.h
+index febc1aa57714..d1f7d35f986e 100644
+--- a/arch/arm64/include/asm/unistd.h
++++ b/arch/arm64/include/asm/unistd.h
+@@ -38,7 +38,7 @@
+ #define __ARM_NR_compat_set_tls		(__ARM_NR_COMPAT_BASE + 5)
+ #define __ARM_NR_COMPAT_END		(__ARM_NR_COMPAT_BASE + 0x800)
+ 
+-#define __NR_compat_syscalls		437
++#define __NR_compat_syscalls		444
+ #endif
+ 
+ #define __ARCH_WANT_SYS_CLONE
+diff --git a/arch/arm64/include/asm/unistd32.h b/arch/arm64/include/asm/unistd32.h
+index c885dcfcd605..5a1b4bf01600 100644
+--- a/arch/arm64/include/asm/unistd32.h
++++ b/arch/arm64/include/asm/unistd32.h
+@@ -882,6 +882,9 @@ __SYSCALL(__NR_clone3, sys_clone3)
+ #define __NR_process_madvise 436
+ __SYSCALL(__NR_process_madvise, sys_process_madvise)
+ 
++#define __NR_hvalve 443
++__SYSCALL(__NR_hvalve, sys_hvalve)
++
+ /*
+  * Please add new compat syscalls above this comment and update
+  * __NR_compat_syscalls in asm/unistd.h.
+diff --git a/block/blk-core.c b/block/blk-core.c
+index eeb6b0245e18..d056aec04fdd 100644
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -49,6 +49,8 @@
+ #include "blk-pm.h"
+ #include "blk-rq-qos.h"
+ 
++#include <hvalve/hvalve.h>
++
+ #ifdef CONFIG_DEBUG_FS
+ struct dentry *blk_debugfs_root;
+ #endif
+@@ -735,8 +737,21 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
+ 			break;
+ 		}
+ 
+-		if (merged)
++		if (merged) {
++#ifdef ENABLE_HVALVE
++			//printk("CIH: attempt merge: current_foreground_uid: %d, uid: %d, pid: %d\n", get_current_foreground_uid(), (current->cred) ? current->cred->uid.val : -1, current->pid);
++			if (current->cred) {
++				if (rq->req_last_uid != current->cred->uid.val) {
++					rq->merge_cnt++;
++					rq->req_last_uid = current->cred->uid.val;
++				}
++				rq->req_fg_uid = get_current_foreground_uid();
++				if (rq->req_fg_uid == rq->req_last_uid)
++					rq->is_fg_req = FOREGROUND;
++			}
++#endif
+ 			return true;
++		}
+ 	}
+ 
+ 	return false;
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index 93b007f58630..1983976df64a 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -40,6 +40,8 @@
+ #include "blk-mq-sched.h"
+ #include "blk-rq-qos.h"
+ 
++#include <hvalve/hvalve.h>
++
+ static void blk_mq_poll_stats_start(struct request_queue *q);
+ static void blk_mq_poll_stats_fn(struct blk_stat_callback *cb);
+ 
+@@ -415,6 +417,15 @@ static struct request *blk_mq_get_request(struct request_queue *q,
+ 			rq->rq_flags |= RQF_ELVPRIV;
+ 		}
+ 	}
++#ifdef ENABLE_HVALVE
++	if (current->cred) {
++		rq->req_last_uid = current->cred->uid.val;
++		rq->is_launch_state = is_launch_state();
++		rq->req_fg_uid = get_current_foreground_uid();
++		rq->is_fg_req = (rq->req_fg_uid == rq->req_last_uid) ? FOREGROUND : BACKGROUND;
++		rq->merge_cnt = 0;
++	}
++#endif
+ 	data->hctx->queued++;
+ 	return rq;
+ }
+diff --git a/defconfig b/defconfig
+index 8d060cdaa52b..729a0fb78111 100644
+--- a/defconfig
++++ b/defconfig
+@@ -1813,6 +1813,7 @@ CONFIG_SCSI_UFS_QCOM=y
+ CONFIG_SCSI_UFS_BSG=y
+ CONFIG_SCSI_UFS_CRYPTO=y
+ CONFIG_SCSI_UFS_CRYPTO_QTI=y
++CONFIG_SCSI_UFS_HPB=y
+ # CONFIG_SCSI_HPTIOP is not set
+ # CONFIG_SCSI_MYRB is not set
+ # CONFIG_SCSI_MYRS is not set
+diff --git a/drivers/scsi/ufs/ufshcd.c b/drivers/scsi/ufs/ufshcd.c
+index 98f40fe97055..ca6885bb4b53 100644
+--- a/drivers/scsi/ufs/ufshcd.c
++++ b/drivers/scsi/ufs/ufshcd.c
+@@ -2649,6 +2649,18 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
+ 	}
+ 	lrbp->req_abort_skip = false;
+ 
++#ifdef ENABLE_HVALVE
++	struct request *req = cmd->request;
++	if (req->bio && (bio_op(req->bio) == REQ_OP_WRITE || bio_op(req->bio) == REQ_OP_READ)) {
++		int launch_state = is_launch_state();
++		int fg = (req->is_fg_req == FOREGROUND) ? 1 : 0;
++		int UID = get_current_foreground_uid();
++		int mem_p = get_memory_pressure();
++
++		ufshpb_prep(hba, lrbp, req, fg, UID, launch_state, mem_p);
++	}
++#endif
++
+ 	ufshcd_comp_scsi_upiu(hba, lrbp);
+ 
+ 	err = ufshcd_map_sg(hba, lrbp);
+diff --git a/drivers/scsi/ufs/ufshcd.h b/drivers/scsi/ufs/ufshcd.h
+index fb86ae50e31a..962e99b6fb86 100644
+--- a/drivers/scsi/ufs/ufshcd.h
++++ b/drivers/scsi/ufs/ufshcd.h
+@@ -1057,6 +1057,10 @@ struct ufs_hba {
+ 	bool wb_buf_flush_enabled;
+ 	bool wb_enabled;
+ 	struct delayed_work rpm_dev_flush_recheck_work;
++
++	// Hvalve
++	void (*hpb_func)(struct ufs_hba *dev, int uid, int free_size, int priority);
++
+ 	ANDROID_KABI_RESERVE(1);
+ 	ANDROID_KABI_RESERVE(2);
+ 	ANDROID_KABI_RESERVE(3);
+diff --git a/drivers/scsi/ufs/ufshpb.c b/drivers/scsi/ufs/ufshpb.c
+index 026a133149dc..e3c8db656a60 100644
+--- a/drivers/scsi/ufs/ufshpb.c
++++ b/drivers/scsi/ufs/ufshpb.c
+@@ -9,6 +9,14 @@
+  *	Jinyoung Choi <j-young.choi@samsung.com>
+  */
+ 
++/* Hvalve Feature Added
++ *
++ * Date: Sep. 22. 2022
++ * Authors:
++ *  Yoona Kim <yoonakim@davinci.snu.ac.kr>
++ *  Inhyuk Choi <ihchoi@davinci.snu.ac.kr>
++ */
++
+ #include <asm/unaligned.h>
+ #include <linux/async.h>
+ 
+@@ -32,6 +40,11 @@ static int tot_active_srgn_pages;
+ 
+ static struct workqueue_struct *ufshpb_wq;
+ 
++/* Hvalve */
++static struct hpb_app tmp_fg_app;
++
++
++
+ static void ufshpb_update_active_info(struct ufshpb_lu *hpb, int rgn_idx,
+ 				      int srgn_idx);
+ 
+@@ -144,19 +157,429 @@ static bool ufshpb_is_hpb_rsp_valid(struct ufs_hba *hba,
+ 	return true;
+ }
+ 
+-static void ufshpb_iterate_rgn(struct ufshpb_lu *hpb, int rgn_idx, int srgn_idx,
+-			       int srgn_offset, int cnt, bool set_dirty)
++
++/*Hvalve*/
++
++void hpb_set_srgn_fg(struct ufshpb_subregion *srgn, int fg)
++{
++	if(fg)
++		srgn->fg = true;
++	else
++		srgn->fg = false;
++}
++
++void hpb_set_rgn_fg(struct ufshpb_region *rgn, int fg)
++{
++	if(fg)
++		rgn->fg = true;
++	else
++		rgn->fg = false;
++}
++
++int cal_l2p_key (int rgn, int srgn)
++{
++	return (srgn  + (rgn *HPB_SRGN_PER_RGN));
++}
++
++
++int hvalve_evict_one_app(struct ufshpb_lu *hpb) {
++	struct hpb_app *victim_app, *cur_app;
++	struct app_L2P *cur_l2p;
++	int bkt, bkt2;
++	int last_ref_temp = -1;
++	bool victim_found = false;
++	int victim_UID = -1;
++	struct hlist_node* tmp;
++
++	// 0. get victim with least referenced app count
++	hash_for_each(hpb->hpb_app_tbl, bkt, cur_app, app_node) {
++		if(cur_app->last_ref < last_ref_temp) {
++			victim_app = cur_app;
++			victim_found = true;
++			last_ref_temp = victim_app->last_ref;
++		}
++	}
++
++	if(victim_found && victim_app) {
++		victim_UID = victim_app->uid;
++		// 1. hash_del for all l2p entries of app_L2P_tbl
++		// free app_L2P_tbl
++		hash_for_each_safe(victim_app->app_L2P_tbl, bkt2, tmp, cur_l2p, l2p_node) {
++			hash_del(&cur_l2p->l2p_node);
++			kfree(cur_l2p);
++		}
++
++		// 2. hash_del victim app from hpb_app_tbl
++		hash_del(&victim_app->app_node);
++		list_del(&victim_app->list);
++		app_mem_pool_free(victim_app);
++
++		hpb->num_tracked_apps--;
++	}
++	return victim_UID;
++}
++
++
++
++struct hpb_app * add_app_to_hlist(struct ufshpb_lu *hpb) {
++	struct hpb_app *new_app, *cur_app = NULL;
++	bool new_app_chk = true, app_deleted = true;
++	int UID = hpb->cur_fg_uid, victim_UID = -1;
++
++	// check if the used app is already added to the hpb app hlist
++	hash_for_each_possible(hpb->hpb_app_tbl, cur_app, app_node, UID) {
++		if(cur_app->uid == UID) {
++			struct hpb_app* tmp_app = NULL;
++			new_app_chk = false;
++
++			list_move_tail(&cur_app->list, &hpb->app_lru);
++
++			cur_app->ref_count++;
++
++			if(hpb->launched) {
++				cur_app->launch_count++;
++			}
++			break;
++		}
++	}
++
++	// add new app to the hpb app hlist
++	if(new_app_chk) {
++		if(hpb->num_tracked_apps >= NUM_TRACKED_APPS) {
++			// evict least referenced app
++			victim_UID = hvalve_evict_one_app(hpb);
++			if(victim_UID == -1) {
++				app_deleted = false;
++			}
++		}
++
++		hpb->num_tracked_apps++;
++		hpb->tot_num_tracked_apps++;
++		new_app = app_mem_pool_alloc();
++
++		if(!new_app) {
++			app_mem_pool_free(new_app);
++			return NULL;
++		}
++
++		new_app->uid = UID;
++		new_app->ref_count = 1;
++		new_app->launch_count = 0;
++		new_app->last_ref = hpb->tot_num_tracked_apps;
++
++		if(hpb->launched)
++			new_app->launch_count++;
++
++		new_app->group_count = 0;
++
++
++		hash_init(new_app->app_L2P_tbl);
++
++		spin_lock_init(&new_app->lock);
++
++		INIT_HLIST_NODE(&new_app->app_node);
++
++		hash_add(hpb->hpb_app_tbl, &new_app->app_node, UID);
++
++		list_add_tail(&new_app->list, &hpb->app_lru);
++
++		cur_app = new_app;
++
++	}
++
++	return cur_app;
++}
++
++void update_referenced_l2p(struct ufshpb_lu *hpb, struct hpb_app *cur_app) {
++	int rgn, srgn, l2p_key, hitmiss;
++	int bkt;
++
++	struct app_ref_rgn_list *cur_temp_rgn;
++	struct app_L2P *cur_l2p;
++
++	bool new_l2p_chk = true;
++	struct hlist_node* tmp;
++
++	int count = 0;
++
++	int total_l2p = 0;
++	int correct_l2p = 0;
++	int real_correct_l2p = 0;
++	int group_count = cur_app->group_count;
++
++	hash_for_each_safe(hpb->temp_fg_app_ref_tbl, bkt, tmp, cur_temp_rgn, rgn_node) {
++		count++;
++		rgn = cur_temp_rgn->rgn;
++		srgn = cur_temp_rgn->srgn;
++		l2p_key = cal_l2p_key(rgn, srgn);
++		hitmiss = cur_temp_rgn->hit_miss;
++		// add referenced rgn and srgn to the app hlist
++		hash_for_each_possible(cur_app->app_L2P_tbl, cur_l2p, l2p_node, l2p_key) {
++			if(cal_l2p_key(cur_l2p->rgn, cur_l2p->srgn) == l2p_key ) {
++				new_l2p_chk = false;
++				cur_l2p->ref_count++;
++				if(hpb->launched)
++					cur_l2p->launch = true;
++
++				cur_l2p->now = true;
++
++				correct_l2p++;
++				if (hitmiss == 1)
++					real_correct_l2p++;
++				break;
++			}
++		}
++		total_l2p++;
++		// add new app to the hpb app hlist
++		if(new_l2p_chk) {
++			struct app_L2P *new_l2p = kzalloc(sizeof(*new_l2p), GFP_KERNEL);
++			if(!new_l2p) {
++				kfree(new_l2p);
++			} else {
++				cur_app->group_count++;
++				new_l2p->rgn = rgn;
++				new_l2p->srgn = srgn;
++				new_l2p->ref_count = 1;
++				new_l2p->window = APP_REF_WINDOW;
++				new_l2p->now = true;
++				new_l2p->precision_state = 1;
++
++				if(hpb->launched)
++					new_l2p->launch = true;
++				else
++					new_l2p->launch = false;
++
++				INIT_HLIST_NODE(&new_l2p->l2p_node);
++				hash_add(cur_app->app_L2P_tbl, &new_l2p->l2p_node, l2p_key);
++
++			}
++		}
++
++		new_l2p_chk = true;
++		hpb->cur_fg_referenced_rgn_count--;
++
++
++		hash_del(&cur_temp_rgn->rgn_node);
++		kfree(cur_temp_rgn);
++	}
++}
++
++void update_app_l2p(struct ufshpb_lu *hpb)
++{
++	struct hpb_app *cur_app;
++
++	// get app hlist node
++	cur_app = add_app_to_hlist(hpb);
++	if(cur_app == NULL) {
++		return;
++	}
++
++	// update fg app referenced rgn and srgn to the app l2p list
++	update_referenced_l2p(hpb, cur_app);
++}
++
++void add_temp_fg_ref_list(struct ufshpb_lu * hpb,int rgn_idx,int srgn_idx) {
++	int l2p_key = cal_l2p_key(rgn_idx, srgn_idx);
++
++	struct app_ref_rgn_list *new_rgn, *cur_rgn;
++	bool new_rgn_chk = true;
++
++
++	// add referenced rgn and srgn to the app hlist
++	hash_for_each_possible(hpb->temp_fg_app_ref_tbl, cur_rgn, rgn_node, l2p_key) {
++		if(cal_l2p_key(cur_rgn->rgn, cur_rgn->srgn) == l2p_key ) {
++			new_rgn_chk = false;
++			cur_rgn->count++;
++
++			if(hpb->app_launching)
++				cur_rgn->launch = true;
++
++			break;
++		}
++	}
++
++
++	// add new rgn to the temp rgn hlist
++	if(new_rgn_chk) {
++		struct ufshpb_region *rgn = hpb->rgn_tbl + rgn_idx;
++		struct ufshpb_subregion *srgn = rgn->srgn_tbl + srgn_idx;
++		hpb->cur_fg_referenced_rgn_count++;
++
++		new_rgn = kzalloc(sizeof(*new_rgn), GFP_KERNEL);
++		if(!new_rgn) {
++			kfree(new_rgn);
++			return;
++		}
++
++		new_rgn->rgn = rgn_idx;
++		new_rgn->srgn = srgn_idx;
++		new_rgn->count = 1;
++
++		new_rgn->hit_miss = (ufshpb_is_valid_srgn(rgn, srgn)) ? 1 : 0;
++
++		if(hpb->app_launching)
++			new_rgn->launch = true;
++
++		INIT_HLIST_NODE(&new_rgn->rgn_node);
++		hash_add(hpb->temp_fg_app_ref_tbl, &new_rgn->rgn_node, l2p_key);
++
++	}
++
++}
++
++void hvalve_load_fg_l2p(struct ufshpb_lu *hpb, int UID) {
++	// load current new FG app tracked l2ps
++	int rgn_idx, srgn_idx, bkt;
++	unsigned long flags;
++
++	struct ufshpb_region *rgn;
++	struct ufshpb_subregion *srgn = NULL;
++
++	struct hpb_app *cur_app = NULL;
++	struct app_L2P *cur_l2p = NULL;
++	bool app_found = false;
++	struct hlist_node* tmp;
++
++	// check if the used app is already added to the hpb app hlist
++	hash_for_each_possible(hpb->hpb_app_tbl, cur_app, app_node, UID) {
++		if(cur_app->uid == UID) {
++			cur_app->last_ref = hpb->tot_num_tracked_apps;
++			app_found = true;
++			break;
++		}
++	}
++
++	if(!app_found) {
++		return ;
++	} else if (cur_app != NULL) {
++		int activate_cnt = 0;
++		hash_for_each_safe(cur_app->app_L2P_tbl, bkt, tmp, cur_l2p, l2p_node) {
++			rgn_idx = cur_l2p->rgn;
++			srgn_idx = cur_l2p->srgn;
++
++			rgn = hpb->rgn_tbl + rgn_idx;
++			srgn = rgn->srgn_tbl + srgn_idx;
++
++
++			if (rgn->rgn_state ==HPB_RGN_INACTIVE || srgn->srgn_state == HPB_SRGN_INVALID) {
++				activate_cnt++;
++
++				if(test_and_clear_bit(RGN_FLAG_UPDATE, &rgn->rgn_flags)) {
++					spin_lock_irqsave(&hpb->rsp_list_lock, flags);
++					ufshpb_update_active_info(hpb, rgn_idx, srgn_idx, true);
++					spin_unlock_irqrestore(&hpb->rsp_list_lock, flags);
++				}
++			}
++		}
++	}
++}
++
++
++static int ufshpb_iterate_rgn(struct ufshpb_lu *hpb, int rgn_idx, int srgn_idx,
++			       int srgn_offset, int cnt, bool set_dirty, int fg, int UID)
+ {
+ 	struct ufshpb_region *rgn;
+ 	struct ufshpb_subregion *srgn, *prev_srgn = NULL;
+ 	int set_bit_len;
+ 	int bitmap_len;
+ 	unsigned long flags;
++	unsigned long fflags;
++	bool w_hit = false;
++	int ret = 0;
++
++	struct app_ref_rgn_list *cur_referenced_rgn;
++	int bkt;
++
++	struct hlist_node* tmp;
++	struct hpb_app *cur_app = NULL;
++
++	if(!set_dirty && fg && UID != hpb->cur_fg_uid) {
++		int check;
++		spin_lock_irqsave(&hpb->hpb_app_lock, fflags);
++		check = 0;
++
++		hvalve_load_fg_l2p(hpb, UID);
++
++		hash_for_each_possible(hpb->hpb_app_tbl, cur_app, app_node, hpb->cur_fg_uid) {
++			if(cur_app->uid == hpb->cur_fg_uid) {
++				cur_app->fg_io_cnt = 0;
++				cur_app->fg_hit_cnt = 0;
++				cur_app->fg_sram_hit_cnt = 0;
++				cur_app->fg_total_hit_cnt = 0;
++				cur_app->fg_io_time = 0;
++				cur_app->launch_io_cnt = 0;
++				cur_app->launch_hit_cnt = 0;
++				cur_app->launch_sram_hit_cnt = 0;
++				cur_app->launch_total_hit_cnt = 0;
++				cur_app->launch_io_time = 0;
++				cur_app->bg_io_cnt = 0;
++				cur_app->bg_hit_cnt = 0;
++				cur_app->bg_sram_hit_cnt = 0;
++				cur_app->bg_total_hit_cnt = 0;
++				cur_app->bg_launch_io_cnt = 0;
++				cur_app->bg_launch_hit_cnt = 0;
++				cur_app->bg_launch_sram_hit_cnt = 0;
++				cur_app->bg_launch_total_hit_cnt = 0;
++				check = 1;
++				break;
++			}
++		}
++		if (check == 0) {
++			tmp_fg_app.fg_io_cnt = 0;
++			tmp_fg_app.fg_hit_cnt = 0;
++			tmp_fg_app.fg_sram_hit_cnt = 0;
++			tmp_fg_app.fg_total_hit_cnt = 0;
++			tmp_fg_app.fg_io_time = 0;
++			tmp_fg_app.launch_io_cnt = 0;
++			tmp_fg_app.launch_hit_cnt = 0;
++			tmp_fg_app.launch_sram_hit_cnt = 0;
++			tmp_fg_app.launch_total_hit_cnt = 0;
++			tmp_fg_app.launch_io_time = 0;
++			tmp_fg_app.bg_io_cnt = 0;
++			tmp_fg_app.bg_hit_cnt = 0;
++			tmp_fg_app.bg_sram_hit_cnt = 0;
++			tmp_fg_app.bg_total_hit_cnt = 0;
++			tmp_fg_app.bg_launch_io_cnt = 0;
++			tmp_fg_app.bg_launch_hit_cnt = 0;
++			tmp_fg_app.bg_launch_sram_hit_cnt = 0;
++			tmp_fg_app.bg_launch_total_hit_cnt = 0;
++		}
++
++		// 1. if there exists prev fg app referenced rgns update prev_fg_app tracked L2P list
++		if( hpb->cur_fg_referenced_rgn_count > 0) {
++#if Hvalve
++			if (hpb->tracking_mode == true) {
++				update_app_l2p(hpb);
++			}
++#endif
++		}
++
++		// 2. change curr UID
++		hpb->cur_fg_referenced_rgn_count = 0;
++		hpb->launched = false;
++		hpb->cur_fg_uid = UID;
++
++        if (10000 <= UID && UID < 20000)
++            hpb->tracking_mode = true;
++		else
++            hpb->tracking_mode = false;
++
++		// 3. delete hash list
++		hash_for_each_safe(hpb->temp_fg_app_ref_tbl, bkt, tmp, cur_referenced_rgn, rgn_node) {
++			hash_del(&cur_referenced_rgn->rgn_node);
++			kfree(cur_referenced_rgn);
++		}
++		ret = 1;
++		spin_unlock_irqrestore(&hpb->hpb_app_lock, fflags);
++	}
+ 
+ next_srgn:
+ 	rgn = hpb->rgn_tbl + rgn_idx;
+ 	srgn = rgn->srgn_tbl + srgn_idx;
+ 
++	hpb_set_rgn_fg(rgn, fg);
++	hpb_set_srgn_fg(srgn, fg);
++
+ 	if (likely(!srgn->is_last))
+ 		bitmap_len = hpb->entries_per_srgn;
+ 	else
+@@ -170,15 +593,20 @@ next_srgn:
+ 	spin_lock_irqsave(&hpb->rgn_state_lock, flags);
+ 	if (rgn->rgn_state != HPB_RGN_INACTIVE) {
+ 		if (set_dirty) {
+-			if (srgn->srgn_state == HPB_SRGN_VALID)
++			if (srgn->srgn_state == HPB_SRGN_VALID) {
++				w_hit = true;
++
+ 				bitmap_set(srgn->mctx->ppn_dirty, srgn_offset,
+ 					   set_bit_len);
++			}
+ 		} else if (hpb->is_hcm) {
+ 			 /* rewind the read timer for lru regions */
+ 			rgn->read_timeout = ktime_add_ms(ktime_get(),
+ 					rgn->hpb->params.read_timeout_ms);
+ 			rgn->read_timeout_expiries =
+ 				rgn->hpb->params.read_timeout_expiries;
++			if (hpb->cur_fg_uid != rgn->last_access_uid)
++				rgn->last_access_uid = UID;
+ 		}
+ 	}
+ 	spin_unlock_irqrestore(&hpb->rgn_state_lock, flags);
+@@ -194,6 +622,17 @@ next_srgn:
+ 		} else {
+ 			srgn->reads++;
+ 			rgn->reads++;
++
++			// acrtivate every fg app referenced list
++			if(fg) {
++#if Hvalve
++				activate = true;
++#endif
++				// update referenced rgn to the curr fg app ref list
++				if(hpb->tracking_mode)
++					add_temp_fg_ref_list(hpb, rgn_idx, srgn_idx);
++			}
++
+ 			if (srgn->reads == hpb->params.activation_thld)
+ 				activate = true;
+ 		}
+@@ -201,11 +640,14 @@ next_srgn:
+ 
+ 		if (activate ||
+ 		    test_and_clear_bit(RGN_FLAG_UPDATE, &rgn->rgn_flags)) {
++
+ 			spin_lock_irqsave(&hpb->rsp_list_lock, flags);
+-			ufshpb_update_active_info(hpb, rgn_idx, srgn_idx);
++
++			if(Hvalve)
++				ufshpb_update_active_info(hpb, rgn_idx, srgn_idx, true);
++			else
++				ufshpb_update_active_info(hpb, rgn_idx, srgn_idx, false);
+ 			spin_unlock_irqrestore(&hpb->rsp_list_lock, flags);
+-			dev_dbg(&hpb->sdev_ufs_lu->sdev_dev,
+-				"activate region %d-%d\n", rgn_idx, srgn_idx);
+ 		}
+ 
+ 		prev_srgn = srgn;
+@@ -220,8 +662,15 @@ next_srgn:
+ 	cnt -= set_bit_len;
+ 	if (cnt > 0)
+ 		goto next_srgn;
++
++
++	return ret;
+ }
+ 
++
++
++/*******/
++
+ static bool ufshpb_test_ppn_dirty(struct ufshpb_lu *hpb, int rgn_idx,
+ 				  int srgn_idx, int srgn_offset, int cnt)
+ {
+@@ -344,7 +793,8 @@ ufshpb_set_hpb_read_to_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp,
+ /*
+  * This function will set up HPB read command using host-side L2P map data.
+  */
+-int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
++/* Hvalve added fg, UID, is_launch, mem_p arguments */
++int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, int fg, int UID, int is_launch, int mem_p)
+ {
+ 	struct ufshpb_lu *hpb;
+ 	struct ufshpb_region *rgn;
+@@ -356,6 +806,8 @@ int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+ 	int transfer_len, rgn_idx, srgn_idx, srgn_offset;
+ 	int err = 0;
+ 
++	bool UID_changed = false;
++
+ 	hpb = ufshpb_get_hpb_data(cmd->device);
+ 	if (!hpb)
+ 		return -ENODEV;
+@@ -384,10 +836,27 @@ int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+ 	rgn = hpb->rgn_tbl + rgn_idx;
+ 	srgn = rgn->srgn_tbl + srgn_idx;
+ 
++
++	// change metadata for hpb launching states
++	if(is_launch) {
++		hpb->app_launching = true;
++		hpb->launched = true;
++	} else if(hpb->app_launching)
++		hpb->app_launching = false;
++
++	if(fg && hpb->cur_fg_uid != UID)
++		UID_changed = true;
++
++	// mem_p : 0: low, 1: midium, 2: critical, 3: super critical
++#if Hvalve_Dynamic
++	if(mem_p > 0)
++		hvalve_regulate_hpb(dev, mem_p);
++#endif
++
+ 	/* If command type is WRITE or DISCARD, set bitmap as drity */
+ 	if (ufshpb_is_write_or_discard(cmd)) {
+ 		ufshpb_iterate_rgn(hpb, rgn_idx, srgn_idx, srgn_offset,
+-				   transfer_len, true);
++				   transfer_len, true, fg, UID);
+ 		return 0;
+ 	}
+ 
+@@ -402,7 +871,7 @@ int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+ 		 * activation trials.
+ 		 */
+ 		ufshpb_iterate_rgn(hpb, rgn_idx, srgn_idx, srgn_offset,
+-				   transfer_len, false);
++				   transfer_len, false, fg , UID);
+ 
+ 		/* keep those counters normalized */
+ 		if (rgn->reads > hpb->entries_per_srgn)
+@@ -869,7 +1338,8 @@ static void ufshpb_hit_lru_info(struct victim_select_info *lru_info,
+ static struct ufshpb_region *ufshpb_victim_lru_info(struct ufshpb_lu *hpb)
+ {
+ 	struct victim_select_info *lru_info = &hpb->lru_info;
+-	struct ufshpb_region *rgn, *victim_rgn = NULL;
++	struct ufshpb_region *rgn, *victim_rgn = NULL, *first_rgn;
++	int count = 0;
+ 
+ 	list_for_each_entry(rgn, &lru_info->lh_lru_rgn, list_lru_rgn) {
+ 		if (!rgn) {
+@@ -878,9 +1348,17 @@ static struct ufshpb_region *ufshpb_victim_lru_info(struct ufshpb_lu *hpb)
+ 				__func__);
+ 			return NULL;
+ 		}
++		if(count == 0) {
++			first_rgn = rgn;
++			count+=1;
++		}
++
+ 		if (ufshpb_check_srgns_issue_state(hpb, rgn))
+ 			continue;
+-
++#if Hvalve
++		if(rgn->fg)
++			continue;
++#endif
+ 		/*
+ 		 * in host control mode, verify that the exiting region
+ 		 * has fewer reads
+@@ -892,6 +1370,8 @@ static struct ufshpb_region *ufshpb_victim_lru_info(struct ufshpb_lu *hpb)
+ 		victim_rgn = rgn;
+ 		break;
+ 	}
++	if (!victim_rgn && Hvalve)
++		return first_rgn;
+ 
+ 	return victim_rgn;
+ }
+@@ -901,6 +1381,7 @@ static void ufshpb_cleanup_lru_info(struct victim_select_info *lru_info,
+ {
+ 	list_del_init(&rgn->list_lru_rgn);
+ 	rgn->rgn_state = HPB_RGN_INACTIVE;
++	rgn->fg = false;
+ 	atomic_dec(&lru_info->active_cnt);
+ }
+ 
+@@ -1103,7 +1584,7 @@ static int ufshpb_add_region(struct ufshpb_lu *hpb, struct ufshpb_region *rgn)
+ 			 * region has enough reads
+ 			 */
+ 			if (hpb->is_hcm &&
+-			    rgn->reads < hpb->params.eviction_thld_enter) {
++			    rgn->reads < hpb->params.eviction_thld_enter && !Hvalve) {
+ 				ret = -EACCES;
+ 				goto out;
+ 			}
+@@ -1450,6 +1931,67 @@ static void ufshpb_run_inactive_region_list(struct ufshpb_lu *hpb)
+ 	spin_unlock_irqrestore(&hpb->rsp_list_lock, flags);
+ }
+ 
++/*Hvlave*/
++void hvalve_regulate_hpb(struct nvme_dev *dev, int uid, int free_size, int priority) {
++	struct ufshpb_lu* hpb = dev->hpb;
++	struct victim_select_info* lru_info = &hpb->lru_info;
++	struct ufshpb_region *rgn, *next_rgn;
++	int expected_rgn = 0;
++	int freed_rgn = 0;
++	int num_victim = 0;
++	int srgn_idx;
++	struct ufshpb_subregion *srgn;
++	unsigned long flags;
++	ktime_t start;
++	ktime_t end;
++	ktime_t term = 0;
++	start = ktime_get_ns();
++#if Hvalve_Dynamic == 0
++#else
++	if (priority >= 300) {
++		struct hpb_app *tmp_app;
++		hash_for_each_possible(hpb->hpb_app_tbl, tmp_app, app_node, uid) {
++			if (tmp_app->uid == uid) {
++				expected_rgn = 4 * tmp_app->group_count;
++				break;
++			}
++		}
++	}
++	else { //kill all
++		expected_rgn = atomic_read(&lru_info->active_cnt) * 4;
++	}
++	spin_lock_irqsave(&hpb->rgn_state_lock, flags);
++	list_for_each_entry_safe(rgn, next_rgn, &lru_info->lh_lru_rgn, list_lru_rgn) {
++		if (expected_rgn - freed_rgn <= 0)
++			break;
++		//calculate free size
++		if (rgn->fg == false) {
++			ktime_t tmp_start = ktime_get_ns();
++			__ufshpb_evict_region(hpb, rgn);
++			term += ktime_get_ns() - tmp_start;
++			freed_rgn += 1;
++		}
++	}
++	if (expected_rgn - freed_rgn > 0) {
++		list_for_each_entry_safe(rgn, next_rgn, &lru_info->lh_lru_rgn, list_lru_rgn) {
++			if (expected_rgn - freed_rgn <= 0)
++				break;
++			//calculate free size
++			if (hpb->cur_fg_uid != rgn->last_access_uid) {
++				ktime_t tmp_start = ktime_get_ns();
++				__ufshpb_evict_region(hpb, rgn);
++				term += ktime_get_ns() - tmp_start;
++				freed_rgn += 1;
++			}
++		}
++	}
++
++	spin_unlock_irqrestore(&hpb->rgn_state_lock, flags);
++#endif
++	end = ktime_get_ns();
++}
++
++
+ static void ufshpb_normalization_work_handler(struct work_struct *work)
+ {
+ 	struct ufshpb_lu *hpb = container_of(work, struct ufshpb_lu,
+@@ -1473,6 +2015,11 @@ static void ufshpb_normalization_work_handler(struct work_struct *work)
+ 
+ 		if (rgn->rgn_state != HPB_RGN_ACTIVE || rgn->reads)
+ 			continue;
++#if Hvalve
++		if(rgn->fg)
++			continue;
++# endif
++
+ 
+ 		/* if region is active but has no reads - inactivate it */
+ 		spin_lock(&hpb->rsp_list_lock);
+@@ -1543,6 +2090,8 @@ static void ufshpb_init_subregion_tbl(struct ufshpb_lu *hpb,
+ 		srgn->rgn_idx = rgn->rgn_idx;
+ 		srgn->srgn_idx = srgn_idx;
+ 		srgn->srgn_state = HPB_SRGN_UNUSED;
++
++		srgn->fg = false;
+ 	}
+ 
+ 	if (unlikely(last && hpb->last_srgn_entries))
+@@ -1659,6 +2208,9 @@ static int ufshpb_alloc_region_tbl(struct ufs_hba *hba, struct ufshpb_lu *hpb)
+ 
+ 		rgn->rgn_flags = 0;
+ 		rgn->hpb = hpb;
++
++		/*Hvalve*/
++		rgn->fg = false;
+ 	}
+ 
+ 	hpb->rgn_tbl = rgn_table;
+@@ -2125,6 +2677,18 @@ static int ufshpb_lu_hpb_init(struct ufs_hba *hba, struct ufshpb_lu *hpb)
+ 	INIT_LIST_HEAD(&hpb->lh_inact_rgn);
+ 	INIT_LIST_HEAD(&hpb->list_hpb_lu);
+ 
++	/*Hvalve*/
++	INIT_LIST_HEAD(&hpb->app_lru);
++	hash_init(hpb->hpb_app_tbl);
++	hash_init(hpb->temp_fg_app_ref_tbl);
++	hpb->cur_fg_referenced_rgn_count = 0;
++	hpb->cur_fg_uid = -1;
++	hpb->app_launching = false;
++	hpb->num_tracked_apps = 0;
++	hpb->tot_num_tracked_apps = 0;
++	hpb->launched = false;
++	/******/
++
+ 	INIT_WORK(&hpb->map_work, ufshpb_map_work_handler);
+ 	if (hpb->is_hcm) {
+ 		INIT_WORK(&hpb->ufshpb_normalization_work,
+@@ -2638,6 +3202,9 @@ void ufshpb_init(struct ufs_hba *hba)
+ 		if (!ret)
+ 			break;
+ 	}
++
++	hvalve_init(hba);
++	hba->hpb_func = hvalve_regulate_hpb;
+ }
+ 
+ void ufshpb_remove(struct ufs_hba *hba)
+diff --git a/drivers/scsi/ufs/ufshpb.h b/drivers/scsi/ufs/ufshpb.h
+index f15d8fdbce2e..2e4060433b93 100644
+--- a/drivers/scsi/ufs/ufshpb.h
++++ b/drivers/scsi/ufs/ufshpb.h
+@@ -9,6 +9,15 @@
+  *	Jinyoung Choi <j-young.choi@samsung.com>
+  */
+ 
++
++/* Hvalve Feature Added
++ *
++ * Date: Sep. 22. 2022
++ * Authors:
++ *  Yoona Kim <yoonakim@davinci.snu.ac.kr>
++ *  Inhyuk Choi <ihchoi@davinci.snu.ac.kr>
++ */
++
+ #ifndef _UFSHPB_H_
+ #define _UFSHPB_H_
+ 
+@@ -54,6 +63,21 @@
+ #define HPB_SUPPORT_VERSION			0x200
+ #define HPB_SUPPORT_LEGACY_VERSION		0x100
+ 
++
++
++/* Hvalve */
++// Enable for dynamic HPB resizing
++#define Hvalve_Dynamic 1
++
++/* Hvalve */
++// For managing per-app list
++#define NUM_OF_APPS 200
++#define APP_HASH_BITS 8
++#define RGN_HASH_BITS  10
++#define APP_REF_WINDOW 10
++#define NUM_TRACKED_APPS 20
++
++
+ enum UFSHPB_MODE {
+ 	HPB_HOST_CONTROL,
+ 	HPB_DEVICE_CONTROL,
+@@ -107,6 +131,9 @@ struct ufshpb_subregion {
+ 	int srgn_idx;
+ 	bool is_last;
+ 
++	/* Hvalve */
++	bool fg;
++
+ 	/* subregion reads - for host mode */
+ 	unsigned int reads;
+ 
+@@ -121,6 +148,10 @@ struct ufshpb_region {
+ 	int rgn_idx;
+ 	int srgn_cnt;
+ 
++	/* Hvalve */
++	bool fg;
++	int last_access_uid;
++
+ 	/* below information is used by rsp_list */
+ 	struct list_head list_inact_rgn;
+ 
+@@ -279,13 +310,104 @@ struct ufshpb_lu {
+ 	struct kmem_cache *m_page_cache;
+ 
+ 	struct list_head list_hpb_lu;
++
++
++	/* Hvalve */
++	DECLARE_HASHTABLE(hpb_app_tbl, APP_HASH_BITS);
++	int cur_fg_uid;
++	int num_tracked_apps;
++	int tot_num_tracked_apps;
++	spinlock_t hpb_app_lock;
++	DECLARE_HASHTABLE(temp_fg_app_ref_tbl, 12);
++	int cur_fg_referenced_rgn_count;
++	bool app_launching;
++	bool launched;
++	bool tracking_mode;
++	struct list_head app_lru;
++
+ };
+ 
++
++/* Hvalve */
++
++struct app_L2P {
++	int rgn;
++	int srgn;
++	int ref_count;
++
++	int precision_state;
++
++	bool launch;
++
++	bool now;
++	int window;
++
++	int birth;
++
++	struct hlist_node l2p_node;
++};
++
++struct hpb_app {
++	int uid;
++
++	int ref_count;
++	int launch_count;
++	int group_count;
++	int birth;
++	int last_ref;
++
++	DECLARE_HASHTABLE(app_L2P_tbl, RGN_HASH_BITS);
++
++	spinlock_t lock;
++
++	struct hlist_node app_node;
++	struct list_head list;
++
++	u64 fg_io_time;
++	u64 fg_io_cnt;
++	u64 fg_hit_cnt;
++	u64 fg_sram_hit_cnt;
++	u64 fg_total_hit_cnt;
++
++	u64 launch_io_time;
++	u64 launch_io_cnt;
++	u64 launch_hit_cnt;
++	u64 launch_sram_hit_cnt;
++	u64 launch_total_hit_cnt;
++
++	u64 bg_io_cnt;
++	u64 bg_hit_cnt;
++	u64 bg_sram_hit_cnt;
++	u64 bg_total_hit_cnt;
++
++	u64 bg_launch_io_time;
++	u64 bg_launch_io_cnt;
++	u64 bg_launch_hit_cnt;
++	u64 bg_launch_sram_hit_cnt;
++	u64 bg_launch_total_hit_cnt;
++};
++
++struct app_ref_rgn_list {
++	struct hlist_node rgn_node;
++
++	int rgn;
++	int srgn;
++
++	int count;
++	bool launch;
++	int hit_miss;
++};
++/**********/
++
+ struct ufs_hba;
+ struct ufshcd_lrb;
+ 
+ #ifndef CONFIG_SCSI_UFS_HPB
+-static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) { return 0; }
++/* Hvalve
++ * Arguments for ufshpb_prep() changed
++ */
++static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, struct request *req, int fg, int UID, int is_launch, int mem_p){ return 0; }
++// static int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) { return 0; }
+ static void ufshpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp) {}
+ static void ufshpb_resume(struct ufs_hba *hba) {}
+ static void ufshpb_suspend(struct ufs_hba *hba) {}
+@@ -300,7 +422,12 @@ static void ufshpb_get_geo_info(struct ufs_hba *hba, u8 *geo_buf) {}
+ static void ufshpb_get_dev_info(struct ufs_hba *hba, u8 *desc_buf) {}
+ static bool ufshpb_is_legacy(struct ufs_hba *hba) { return false; }
+ #else
+-int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
++
++/* Hvalve
++ * Arguments for ufshpb_prep() changed
++ */
++void ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, struct request *req, int fg, int UID, int is_launch, int mem_p);
++//int ufshpb_prep(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
+ void ufshpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
+ void ufshpb_resume(struct ufs_hba *hba);
+ void ufshpb_suspend(struct ufs_hba *hba);
+diff --git a/hvalve/Makefile b/hvalve/Makefile
+new file mode 100644
+index 000000000000..f5f268aa6e98
+--- /dev/null
++++ b/hvalve/Makefile
+@@ -0,0 +1 @@
++obj-y += syscall.o
+diff --git a/hvalve/syscall.c b/hvalve/syscall.c
+new file mode 100644
+index 000000000000..a40a8211b72a
+--- /dev/null
++++ b/hvalve/syscall.c
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * kernel/hvalve.c
++ *
++ * Copyright (c) 2022 Inhyuk Choi
++ *
++ * System-call function implementations for Hvalve.
++ */
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <hvalve/hvalve.h>
++#include <linux/types.h>
++#include <linux/hashtable.h>
++
++#include "../drivers/scsi/ufs/ufshcd.h"
++#include "../drivers/scsi/ufs/ufshpb.h"
++
++#ifdef ENABLE_HVALVE
++
++#define NO_FOREGROUND_APP 987654321
++atomic_t launch_state = ATOMIC_INIT(0);
++atomic_t current_foreground_uid = ATOMIC_INIT(0);
++atomic_t current_memory_pressure = ATOMIC_INIT(0);
++int launcher_uid;
++
++int mp_count[4] = { 0,};
++
++struct ufs_hba* hvalve_dev;
++
++void set_current_foreground_uid(int uid) {
++	if (uid == launcher_uid) {
++		atomic_set(&current_foreground_uid, NO_FOREGROUND_APP);
++	} else {
++		atomic_set(&current_foreground_uid, uid);
++		atomic_set(&launch_state, 1);
++	}
++}
++EXPORT_SYMBOL(set_current_foreground_uid);
++
++int get_current_foreground_uid(void) {
++	return current_foreground_uid.counter;
++}
++EXPORT_SYMBOL(get_current_foreground_uid);
++
++int is_launch_state(void) {
++	return launch_state.counter;
++}
++EXPORT_SYMBOL(is_launch_state);
++
++void update_created_uid(int uid) {
++	atomic_set(&current_foreground_uid, uid);
++	atomic_set(&launch_state, 0);
++}
++EXPORT_SYMBOL(update_created_uid);
++
++void update_memory_pressure(int size) {
++	mp_count[size]++;
++	atomic_set(&current_memory_pressure, size);
++	printk("mp_event_signal: current memory pressure: %d, low: %d, midium: %d, critical:%d, super critical: %d\n",
++			size, mp_count[0], mp_count[1], mp_count[2], mp_count[3]);
++}
++EXPORT_SYMBOL(update_memory_pressure);
++
++int get_memory_pressure(void) {
++	return current_memory_pressure.counter;
++}
++EXPORT_SYMBOL(update_memory_pressure);
++
++void set_launcher_uid(int uid) {
++	launcher_uid = uid;
++}
++EXPORT_SYMBOL(set_launcher_uid);
++
++int get_launcher_uid() {
++	return launcher_uid;
++}
++EXPORT_SYMBOL(get_launcher_uid);
++
++void hvalve_init(struct ufs_hba* dev) {
++	if (dev)
++		hvalve_dev = dev;
++}
++EXPORT_SYMBOL(hvalve_init);
++
++void hvalve_get_victim_data(int uid, int free_size, int priority) {
++	if (hvalve_dev && !hvalve_dev->ufshpb_dev.hpb_disabled && hvalve_dev->hpb_func) {
++		hvalve_dev->hpb_func(hvalve_dev, uid, free_size, priority);
++	}
++}
++EXPORT_SYMBOL(hvalve_get_victim_data);
++
++static int __init init_hvalve(void) {
++	printk("init hvalve\n");
++	return 0;
++}
++
++static void __exit exit_hvalve(void) {
++	printk("exit hvalve\n");
++}
++
++module_init(init_hvalve);
++module_exit(exit_hvalve);
++#endif
+diff --git a/include/hvalve/hvalve.h b/include/hvalve/hvalve.h
+new file mode 100644
+index 000000000000..1022962aa775
+--- /dev/null
++++ b/include/hvalve/hvalve.h
+@@ -0,0 +1,30 @@
++#ifndef HVALVE_H
++#define HVALVE_H
++
++#define ENABLE_HVALVE
++
++enum launch_state {
++	RUNNING,
++	LAUNCHED
++};
++
++enum uid_state {
++	NO_UID,
++	FOREGROUND,
++	BACKGROUND
++};
++
++struct ufs_hba;
++
++extern void set_current_foreground_uid(int uid);
++extern int get_current_foreground_uid(void);
++extern int is_launch_state(void);
++extern void update_created_uid(int uid);
++extern void start_launch(int uid);
++extern void update_memory_pressure(int size);
++extern int get_memory_pressure(void);
++extern void set_launcher_uid(int uid);
++extern int get_launcher_uid(void);
++extern void hvalve_init(struct ufs_hba* dev);
++extern void hvalve_get_victim_data(int uid, int free_size, int priority);
++#endif
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index e5ee34f292b4..e290da9afa0b 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -28,6 +28,8 @@
+ #include <linux/scatterlist.h>
+ #include <linux/blkzoned.h>
+ 
++#include <hvalve/hvalve.h>
++
+ struct module;
+ struct scsi_ioctl_command;
+ 
+@@ -150,6 +152,16 @@ struct request {
+ 
+ 	struct list_head queuelist;
+ 
++#ifdef ENABLE_HVALVE
++	int req_last_uid;
++	int req_fg_uid;
++	int is_fg_req;
++	int merge_cnt;
++	int is_launch_state;
++	int is_hit;
++	int is_sram_hit;
++#endif
++
+ 	/*
+ 	 * The hash is used inside the scheduler, and killed once the
+ 	 * request reaches the dispatch list. The ipi_list is only used
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a8e20cb00e5d..38af69723a91 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1227,6 +1227,7 @@ asmlinkage long sys_ni_syscall(void);
+ 
+ #endif /* CONFIG_ARCH_HAS_SYSCALL_WRAPPER */
+ 
++asmlinkage long sys_hvalve(int comm, int arg1, int arg2, int arg3);
+ 
+ /*
+  * Kernel code should not call syscalls (i.e., sys_xyzyyz()) directly.
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 619fdf93772e..6d1fead6cb30 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -853,8 +853,12 @@ __SYSCALL(__NR_clone3, sys_clone3)
+ #define __NR_process_madvise 436
+ __SYSCALL(__NR_process_madvise, sys_process_madvise)
+ 
++#define __NR_hvalve 443
++__SYSCALL(__NR_hvalve, sys_hvalve)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 437
++#define __NR_syscalls 444
++
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 1a7702529ea4..f9dbeab8623c 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,7 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+ 	    notifier.o ksysfs.o cred.o reboot.o \
+-	    async.o range.o smpboot.o ucount.o
++	    async.o range.o smpboot.o ucount.o hvalve.o
+ 
+ obj-$(CONFIG_MODULES) += kmod.o
+ obj-$(CONFIG_MULTIUSER) += groups.o
+diff --git a/kernel/hvalve.c b/kernel/hvalve.c
+new file mode 100644
+index 000000000000..297ee031436c
+--- /dev/null
++++ b/kernel/hvalve.c
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * kernel/hvalve.c
++ *
++ * Copyright (c) 2022 Inhyuk Choi
++ *
++ * System-call handler for Hvalve.
++ */
++
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <asm/processor.h>
++#include <asm/uaccess.h>
++
++#include <hvalve/hvalve.h>
++
++SYSCALL_DEFINE4(hvalve, int, comm, int, arg1, int, arg2, int, arg3)
++{
++	switch(comm) {
++	case 1: //get launcher
++		set_launcher_uid(arg1);
++		break;
++	case 2: //Not use
++		break;
++	case 3: //update foreground uid
++		update_created_uid(arg1);
++		break;
++	case 4: //update memory pressure
++		update_memory_pressure(arg1);
++		break;
++	case 5: //before kill send data
++		hvalve_get_victim_data(arg1, arg2, arg3);
++		break;
++	default:
++		return -1;
++	}
++
++	return 1;
++}
+-- 
+2.39.2
+
